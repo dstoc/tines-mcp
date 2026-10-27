@@ -1762,7 +1762,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_drops_an_in_flight_upstream_request() {
+    async fn cancellation_drops_an_in_flight_full_run_log_request() {
         let mut reply = MockReply::json(StatusCode::OK, "{}");
         reply.delay = Duration::from_secs(5);
         let mut server = start_mock(reply).await;
@@ -1772,7 +1772,12 @@ mod tests {
         let task = tokio::spawn(async move {
             client
                 .run_tool(request_cancellation, |call| async move {
-                    call.get_json(Route::Projects, &Query::new()).await
+                    call.get_bytes_with_status(
+                        Route::RunLog { run_id: "run-a" },
+                        &Query::new(),
+                        1024,
+                    )
+                    .await
                 })
                 .await
         });

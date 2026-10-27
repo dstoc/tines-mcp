@@ -167,6 +167,31 @@ impl ReadTools {
             tool::<GetIssueJournalArgs>(
                 "get_issue_journal",
                 "Resolve the guidance journal and its run or current-state anchor for one issue. This is not chronological activity; use list_events for history.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
+            Tool::new(
+                "list_runs",
+                "List one native page of runs. Filter by immutable issue, project, runner, workflow, or workflow-state IDs; state_id requires workflow_id. Set active=true to keep only assigned, launching, and running runs; omit it to include every status. Run status and outcome are separate fields, and no status filter is provided.",
+                schema_for_type::<ListRunsArgs>(),
+            )
+            .with_annotations(annotations())
+            .with_raw_output_schema(output_schema.clone()),
+            tool::<GetRunArgs>(
+                "get_run",
+                "Read one run by immutable ID. Preserve Tines' lifecycle status separately from its outcome, and return the captured log tail with dropped-byte and retention metadata. This does not fetch the full log.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
+            tool::<GetRunLogArgs>(
+                "get_run_log",
+                "Read a bounded chunk from an explicit tail or full run-log source. Full mode preserves 404, 410, and 503 responses and never substitutes a tail. Active logs can change between calls; a nonzero offset requires the previous chunk's expected_sha256.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
+            tool::<ExplainDispatchArgs>(
+                "explain_dispatch",
+                "Read Tines' dispatch eligibility explanation for one issue. This preserves readiness, routing, and runner checks as supplied; it does not dispatch a run or establish issue acceptance.",
                 output_schema,
             )
             .with_annotations(annotations()),
@@ -965,6 +990,231 @@ impl ReadTools {
         })
         .await
     }
+
+    async fn list_runs(
+        &self,
+        args: ListRunsArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        for (field, value) in [
+            ("issue_id", args.issue_id.as_deref()),
+            ("project_id", args.project_id.as_deref()),
+            ("runner_id", args.runner_id.as_deref()),
+            ("workflow_id", args.workflow_id.as_deref()),
+            ("state_id", args.state_id.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return validation(field, "must be a non-empty immutable ID");
+            }
+        }
+        if args.state_id.is_some() && args.workflow_id.is_none() {
+            return validation("state_id", "requires workflow_id");
+        }
+        if args.active == Some(false) {
+            return validation(
+                "active",
+                "only true is supported; omit it to include all statuses",
+            );
+        }
+        if args
+            .limit
+            .is_some_and(|limit| !(1..=MAX_PAGE_SIZE).contains(&limit))
+        {
+            return validation("limit", "must be between 1 and 100");
+        }
+        if args
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.is_empty() || cursor.chars().count() > MAX_CURSOR_CHARS)
+        {
+            return validation(
+                "cursor",
+                "must be non-empty and no longer than 4096 characters",
+            );
+        }
+
+        self.execute(cancellation, move |call| async move {
+            if let Some(project_id) = args.project_id.as_deref() {
+                reject_excluded(&call, project_id, "run")?;
+            }
+            if let Some(issue_id) = args.issue_id.as_deref()
+                && call.has_project_exclusions()
+            {
+                let project_id = resolve_issue_project_id(&call, issue_id).await?;
+                reject_excluded(&call, &project_id, "run")?;
+            }
+
+            let mut query = Query::new();
+            append_optional(&mut query, "issue", args.issue_id.as_deref());
+            append_optional(&mut query, "project", args.project_id.as_deref());
+            append_optional(&mut query, "runner", args.runner_id.as_deref());
+            append_optional(&mut query, "workflow", args.workflow_id.as_deref());
+            append_optional(&mut query, "state", args.state_id.as_deref());
+            if args.active == Some(true) {
+                query.append("active", "1");
+            }
+            if let Some(limit) = args.limit {
+                query.append("limit", limit);
+            }
+            append_optional(&mut query, "cursor", args.cursor.as_deref());
+
+            let (mut data, status) = call.get_json_with_status(Route::Runs, &query).await?;
+            let items = collection_items_mut(&mut data, status, "runs")?;
+            let links = if call.has_project_exclusions() {
+                retain_visible_run_items(items, &call, status).await?
+            } else if let Some(project_id) = args.project_id.as_deref() {
+                run_links_for_project(items, &call, project_id)
+            } else {
+                Vec::new()
+            };
+            let next_cursor = required_cursor(&data, status)?;
+            if args
+                .cursor
+                .as_deref()
+                .is_some_and(|cursor| next_cursor == Some(cursor))
+            {
+                return Err(TinesError::Schema {
+                    status: Some(status),
+                    code: "repeated_cursor",
+                    message: "Tines returned the same continuation cursor for this run page.",
+                });
+            }
+            Ok(ReadData::new(data).with_links(links))
+        })
+        .await
+    }
+
+    async fn get_run(
+        &self,
+        args: GetRunArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.run_id.trim().is_empty() {
+            return validation("run_id", "must be a non-empty immutable ID");
+        }
+        self.execute(cancellation, move |call| async move {
+            let (data, status) = get_run_detail(&call, &args.run_id).await?;
+            let issue_id = run_issue_id(&data, status)?;
+            let link = run_issue_link(&call, issue_id, "run").await?;
+            Ok(ReadData::new(data).with_links(link.into_iter().collect()))
+        })
+        .await
+    }
+
+    async fn get_run_log(
+        &self,
+        args: GetRunLogArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.run_id.trim().is_empty() {
+            return validation("run_id", "must be a non-empty immutable ID");
+        }
+        let offset = args.offset.unwrap_or(0);
+        let chunk_bytes = args.chunk_bytes.unwrap_or(MAX_CONTENT_CHUNK_BYTES as u32);
+        if !(4..=MAX_CONTENT_CHUNK_BYTES as u32).contains(&chunk_bytes) {
+            return validation("chunk_bytes", "must be between 4 and 32768");
+        }
+        if offset > 0 && args.expected_sha256.is_none() {
+            return validation("expected_sha256", "is required when offset is non-zero");
+        }
+        if args
+            .expected_sha256
+            .as_deref()
+            .is_some_and(|digest| !is_sha256_hex(digest))
+        {
+            return validation(
+                "expected_sha256",
+                "must be a 64-character hexadecimal SHA-256",
+            );
+        }
+
+        self.execute(cancellation, move |call| async move {
+            let (detail, detail_status) = get_run_detail(&call, &args.run_id).await?;
+            let issue_id = run_issue_id(&detail, detail_status)?;
+            let issue_link = run_issue_link(&call, issue_id, "run log").await?;
+            let log_metadata = run_log_metadata(&detail, detail_status)?;
+            let (bytes, status, mime_type, mode) = match args.mode {
+                RunLogMode::Tail => {
+                    let tail = detail.get("log").and_then(Value::as_str).ok_or_else(|| {
+                        schema_error(detail_status, "Tines run detail was missing its log tail.")
+                    })?;
+                    (
+                        tail.as_bytes().to_vec(),
+                        detail_status,
+                        Some("text/plain; charset=utf-8".to_owned()),
+                        "tail",
+                    )
+                }
+                RunLogMode::Full => {
+                    let (bytes, status, mime_type) = call
+                        .get_bytes_with_status(
+                            Route::RunLog {
+                                run_id: &args.run_id,
+                            },
+                            &Query::new(),
+                            MAX_CONTENT_SOURCE_BYTES,
+                        )
+                        .await
+                        .map_err(map_run_log_content_error)?;
+                    (bytes, status, mime_type, "full")
+                }
+            };
+            let bounded = content::bounded_content(
+                &bytes,
+                true,
+                mime_type.as_deref(),
+                offset,
+                chunk_bytes,
+                args.expected_sha256.as_deref(),
+                status,
+            )?;
+            let data = json!({
+                "source": {"run_id": args.run_id, "mode": mode},
+                "mime_type": mime_type,
+                "encoding": bounded.encoding,
+                "total_bytes": bounded.total_bytes,
+                "sha256": bounded.sha256,
+                "offset": bounded.offset,
+                "returned_length": bounded.returned_length,
+                "content": bounded.content,
+                "next_offset": bounded.next_offset,
+                "run": {
+                    "status": log_metadata["status"],
+                    "outcome": log_metadata["outcome"],
+                    "log_bytes_dropped": log_metadata["log_bytes_dropped"],
+                    "log_full_bytes": log_metadata["log_full_bytes"],
+                    "log_raw_bytes": log_metadata["log_raw_bytes"],
+                    "log_expired": log_metadata["log_expired"],
+                },
+            });
+            Ok(ReadData::new(data).with_links(issue_link.into_iter().collect()))
+        })
+        .await
+    }
+
+    async fn explain_dispatch(
+        &self,
+        args: ExplainDispatchArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.issue_id.trim().is_empty() {
+            return validation("issue_id", "must be a non-empty immutable ID");
+        }
+        self.execute(cancellation, move |call| async move {
+            let issue_link = run_issue_link(&call, &args.issue_id, "dispatch").await?;
+            let (data, status) = call
+                .get_json_with_status(
+                    Route::IssueDispatch {
+                        issue_id: &args.issue_id,
+                    },
+                    &Query::new(),
+                )
+                .await?;
+            require_object(&data, status, "dispatch explanation")?;
+            Ok(ReadData::new(data).with_links(issue_link.into_iter().collect()))
+        })
+        .await
+    }
 }
 
 impl ServerHandler for ReadTools {
@@ -1062,6 +1312,49 @@ impl ServerHandler for ReadTools {
             }
             "get_issue_journal" => {
                 self.get_issue_journal(parse_args(&request)?, cancellation)
+                    .await
+            }
+            "list_runs" => {
+                if let Some(field) = [
+                    "issue_id",
+                    "project_id",
+                    "runner_id",
+                    "workflow_id",
+                    "state_id",
+                    "active",
+                    "limit",
+                    "cursor",
+                ]
+                .into_iter()
+                .find(|field| {
+                    request
+                        .arguments
+                        .as_ref()
+                        .and_then(|arguments| arguments.get(*field))
+                        .is_some_and(Value::is_null)
+                }) {
+                    return Ok(validation(field, "must be omitted instead of set to null").into());
+                }
+                self.list_runs(parse_args(&request)?, cancellation).await
+            }
+            "get_run" => self.get_run(parse_args(&request)?, cancellation).await,
+            "get_run_log" => {
+                if let Some(field) = ["offset", "chunk_bytes", "expected_sha256"]
+                    .into_iter()
+                    .find(|field| {
+                        request
+                            .arguments
+                            .as_ref()
+                            .and_then(|arguments| arguments.get(*field))
+                            .is_some_and(Value::is_null)
+                    })
+                {
+                    return Ok(validation(field, "must be omitted instead of set to null").into());
+                }
+                self.get_run_log(parse_args(&request)?, cancellation).await
+            }
+            "explain_dispatch" => {
+                self.explain_dispatch(parse_args(&request)?, cancellation)
                     .await
             }
             _ => return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>()),
@@ -1251,6 +1544,63 @@ struct GetIssueContextArgs {
 #[serde(deny_unknown_fields)]
 struct GetIssueJournalArgs {
     /// Immutable issue ID.
+    issue_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListRunsArgs {
+    /// Restrict to runs on this immutable issue ID.
+    issue_id: Option<String>,
+    /// Restrict to a project by immutable ID.
+    project_id: Option<String>,
+    /// Restrict to a runner by immutable ID.
+    runner_id: Option<String>,
+    /// Restrict to the workflow captured for the run.
+    workflow_id: Option<String>,
+    /// Restrict to the starting state; requires workflow_id.
+    state_id: Option<String>,
+    /// Only true is supported. Omit to include every status.
+    active: Option<bool>,
+    /// Native page size from 1 through 100. Tines defaults to 50.
+    limit: Option<u32>,
+    /// Opaque native cursor from the previous page; keep filters unchanged.
+    cursor: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetRunArgs {
+    /// Immutable Tines run ID.
+    run_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetRunLogArgs {
+    /// Immutable Tines run ID.
+    run_id: String,
+    /// Select the captured tail or the complete log endpoint.
+    mode: RunLogMode,
+    /// Source byte offset. A non-zero offset requires expected_sha256.
+    offset: Option<u64>,
+    /// Maximum decoded bytes to return, from 4 through 32768. Defaults to 32768.
+    chunk_bytes: Option<u32>,
+    /// SHA-256 returned by the previous chunk for this complete source.
+    expected_sha256: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum RunLogMode {
+    Tail,
+    Full,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ExplainDispatchArgs {
+    /// Immutable Tines issue ID.
     issue_id: String,
 }
 
@@ -1472,6 +1822,7 @@ fn collection_items_mut<'a>(
                 "Tines workflow response was missing an items array.",
             ),
             "context" => schema_error(status, "Tines context response was missing an items array."),
+            "runs" => schema_error(status, "Tines run response was missing an items array."),
             _ => schema_error(status, "Tines label response was missing an items array."),
         })
 }
@@ -1761,27 +2112,8 @@ async fn resolve_issue_project_id(
     call: &TinesToolCall,
     issue_id: &str,
 ) -> Result<String, TinesError> {
-    let cached = call.cached_parent_issue(issue_id);
-    let was_cached = cached.is_some();
-    let (issue, status) = match cached {
-        Some(issue) => (issue, 200),
-        None => {
-            call.get_json_with_status(Route::Issue { issue_id }, &Query::new())
-                .await?
-        }
-    };
-    let returned_id = required_string(&issue, "id", status, "issue_id")?;
-    if returned_id != issue_id {
-        return Err(schema_error(
-            status,
-            "Tines returned a different issue during ownership resolution.",
-        ));
-    }
-    let project_id = issue_project_id(&issue, status)?.to_owned();
-    if !was_cached {
-        call.remember_parent_issue(issue_id.to_owned(), issue);
-    }
-    Ok(project_id)
+    let (issue, status) = parent_issue(call, issue_id).await?;
+    Ok(issue_project_id(&issue, status)?.to_owned())
 }
 
 async fn retain_visible_context_items(
@@ -1860,8 +2192,194 @@ fn require_object(data: &Value, status: u16, resource: &'static str) -> Result<(
             status,
             match resource {
                 "effective context" => "Tines effective-context response was not an object.",
+                "dispatch explanation" => "Tines dispatch response was not an object.",
+                "run" => "Tines run response was not an object.",
                 _ => "Tines issue-journal response was not an object.",
             },
         ))
+    }
+}
+
+async fn get_run_detail(call: &TinesToolCall, run_id: &str) -> Result<(Value, u16), TinesError> {
+    let (data, status) = call
+        .get_json_with_status(Route::Run { run_id }, &Query::new())
+        .await?;
+    require_object(&data, status, "run")?;
+    let returned_id = data
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| schema_error(status, "Tines run response was missing its immutable ID."))?;
+    if returned_id != run_id {
+        return Err(schema_error(
+            status,
+            "Tines returned a different run than requested.",
+        ));
+    }
+    run_issue_id(&data, status)?;
+    Ok((data, status))
+}
+
+fn run_issue_id(data: &Value, status: u16) -> Result<&str, TinesError> {
+    data.get("issue_id")
+        .and_then(Value::as_str)
+        .filter(|issue_id| !issue_id.is_empty())
+        .ok_or_else(|| schema_error(status, "Tines run response was missing its issue ID."))
+}
+
+fn run_log_metadata(data: &Value, status: u16) -> Result<Value, TinesError> {
+    let status_value = data
+        .get("status")
+        .filter(|value| value.is_string())
+        .ok_or_else(|| schema_error(status, "Tines run response was missing its status."))?;
+    let outcome = data
+        .get("outcome")
+        .filter(|value| value.is_null() || value.is_string())
+        .ok_or_else(|| schema_error(status, "Tines run response had an invalid outcome."))?;
+    let log_bytes_dropped = required_u64(data, "log_bytes_dropped", status, "run log")?;
+    let log_full_bytes = required_u64(data, "log_full_bytes", status, "run log")?;
+    let log_raw_bytes = required_u64(data, "log_raw_bytes", status, "run log")?;
+    let log_expired = data
+        .get("log_expired")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            schema_error(
+                status,
+                "Tines run response was missing log retention metadata.",
+            )
+        })?;
+    Ok(json!({
+        "status": status_value,
+        "outcome": outcome,
+        "log_bytes_dropped": log_bytes_dropped,
+        "log_full_bytes": log_full_bytes,
+        "log_raw_bytes": log_raw_bytes,
+        "log_expired": log_expired,
+    }))
+}
+
+fn required_u64(
+    data: &Value,
+    field: &'static str,
+    status: u16,
+    resource: &'static str,
+) -> Result<u64, TinesError> {
+    data.get(field).and_then(Value::as_u64).ok_or_else(|| {
+        schema_error(
+            status,
+            match (resource, field) {
+                ("run log", "log_bytes_dropped") => {
+                    "Tines run response was missing dropped-log-byte metadata."
+                }
+                ("run log", "log_full_bytes") => {
+                    "Tines run response was missing full-log-size metadata."
+                }
+                _ => "Tines run response was missing raw-log-size metadata.",
+            },
+        )
+    })
+}
+
+async fn run_issue_link(
+    call: &TinesToolCall,
+    issue_id: &str,
+    resource: &'static str,
+) -> Result<Option<Value>, TinesError> {
+    let (issue, status) = match parent_issue(call, issue_id).await {
+        Ok(issue) => issue,
+        Err(error @ (TinesError::Cancelled | TinesError::Timeout)) => return Err(error),
+        Err(_) if !call.has_project_exclusions() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let project_id = match issue_project_id(&issue, status) {
+        Ok(project_id) => project_id,
+        Err(_) if !call.has_project_exclusions() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    reject_excluded(call, project_id, resource)?;
+    let number = issue.get("number").and_then(Value::as_u64);
+    let project_name = issue
+        .get("project_name")
+        .and_then(Value::as_str)
+        .or_else(|| issue.pointer("/project/name").and_then(Value::as_str));
+    Ok(number.and_then(|number| issue_link(call, project_id, number, project_name)))
+}
+
+async fn parent_issue(call: &TinesToolCall, issue_id: &str) -> Result<(Value, u16), TinesError> {
+    let cached = call.cached_parent_issue(issue_id);
+    let (issue, status) = match cached {
+        Some(issue) => (issue, 200),
+        None => {
+            call.get_json_with_status(Route::Issue { issue_id }, &Query::new())
+                .await?
+        }
+    };
+    let returned_id = required_string(&issue, "id", status, "issue_id")?;
+    if returned_id != issue_id {
+        return Err(schema_error(
+            status,
+            "Tines returned a different issue during ownership resolution.",
+        ));
+    }
+    if call.cached_parent_issue(issue_id).is_none() {
+        call.remember_parent_issue(issue_id.to_owned(), issue.clone());
+    }
+    Ok((issue, status))
+}
+
+async fn retain_visible_run_items(
+    items: &mut Vec<Value>,
+    call: &TinesToolCall,
+    status: u16,
+) -> Result<Vec<Value>, TinesError> {
+    let mut visible = Vec::with_capacity(items.len());
+    let mut links = Vec::new();
+    for item in std::mem::take(items) {
+        let issue_id = run_issue_id(&item, status)?;
+        let (issue, issue_status) = parent_issue(call, issue_id).await?;
+        let project_id = issue_project_id(&issue, issue_status)?;
+        if call.is_project_excluded(project_id) {
+            continue;
+        }
+        let number = issue.get("number").and_then(Value::as_u64);
+        let project_name = issue
+            .get("project_name")
+            .and_then(Value::as_str)
+            .or_else(|| issue.pointer("/project/name").and_then(Value::as_str));
+        if let Some(link) =
+            number.and_then(|number| issue_link(call, project_id, number, project_name))
+        {
+            links.push(link);
+        }
+        visible.push(item);
+    }
+    *items = visible;
+    Ok(links)
+}
+
+fn run_links_for_project(items: &[Value], call: &TinesToolCall, project_id: &str) -> Vec<Value> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let issue_ref = item.get("issue_ref")?;
+            let number = issue_ref.get("number")?.as_u64()?;
+            let project_name = issue_ref.get("project_name").and_then(Value::as_str);
+            issue_link(call, project_id, number, project_name)
+        })
+        .collect()
+}
+
+fn map_run_log_content_error(error: TinesError) -> TinesError {
+    match error {
+        TinesError::BodyTooLarge {
+            status,
+            limit_bytes,
+            diagnostic_id,
+        } => TinesError::ContentTooLarge {
+            status,
+            limit_bytes,
+            diagnostic_id,
+        },
+        other => other,
     }
 }
