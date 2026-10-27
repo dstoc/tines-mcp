@@ -1,10 +1,10 @@
 # tines-mcp
 
-**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, and issue artifacts. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
+**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
 
 ## Available tools
 
-The service provides fifteen read-only tools:
+The service provides nineteen read-only tools:
 
 - **list_projects** and **get_project**
 - **list_issues** and **get_issue**
@@ -15,6 +15,7 @@ The service provides fifteen read-only tools:
 - **list_context** and **get_context** for raw context items
 - **get_issue_context** for effective context, including inherited parts
 - **get_issue_journal** for the applicable guidance journal and its anchor
+- **list_runs**, **get_run**, **get_run_log**, and **explain_dispatch** for run history, logs, and dispatch explanations
 
 **get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response includes the current project, so a moved issue is checked against its current project.
 
@@ -24,9 +25,17 @@ Issue filters include project ID, workflow, state, category, schedule, labels, s
 
 Artifact metadata and content use separate tools. **list_issue_artifacts** lists artifact metadata without fetching bytes. **get_issue_artifact** returns one artifact and its version history. **read_artifact_content** reads a selected version and, for folders, a selected file path. If you omit the version on the first read, the response includes the resolved version and artifact ID. Continue with those values, the same folder path, the returned SHA-256, and **next_offset**. Each call fetches and checks the bounded source again. The source limit is 1 MiB. Chunks default to 32 KiB; set **chunk_bytes** from 4 through 32768 for smaller chunks. Text chunks stay on UTF-8 boundaries. Binary chunks use base64. Link and PR artifacts remain references; the service does not follow their URLs or render artifact content.
 
-**list_context** supports project, state, label, issue, kind, search, exact-scope, archive, and pagination filters. It returns raw items. **get_issue_context** returns Tines' assembled effective context; **get_issue_journal** resolves guidance for the issue and its anchor. The journal is guidance, not chronological activity.
+**list_context** supports project, state, label, issue, kind, search, exact-scope, archive, and pagination filters. It returns raw items. **get_issue_context** returns Tines' assembled effective context; **get_issue_journal** resolves guidance for the issue and does not return chronological activity.
 
 **list_events** reads one page of existing activity on demand. It accepts project and issue IDs, an open list of event type strings, a workflow state ID, an inclusive **since** bound, an exclusive **until** bound, and the native cursor. Bounds can be epoch milliseconds or ISO 8601 timestamps. Keep the filters unchanged when continuing. Activity traversal is live rather than transactional, and its cursor is not a durable replay checkpoint. An empty page can still have a cursor when excluded projects accounted for every event on that page.
+
+### Runs, logs, and dispatch
+
+**list_runs** returns one native page. It supports issue, project, runner, workflow, workflow-state, active-only, and pagination filters. Use immutable IDs. A workflow-state filter requires **workflow_id**. Set **active=true** to include only runs in `assigned`, `launching`, or `running`; omit it to include all statuses. Continue with **next_cursor** and keep the filters unchanged. The response preserves run **status** separately from **outcome**. Status describes run lifecycle; outcome is Tines' `advanced`, `stalled`, or `interrupted` judgment and can be null. There is no run-status filter.
+
+**get_run** returns the run detail and captured log tail, including dropped-byte and retention metadata. It does not fetch the complete log. **explain_dispatch** is a separate read of Tines' eligibility and routing checks; it does not dispatch a run or determine issue acceptance.
+
+**get_run_log** requires **mode** `tail` or `full`. It returns bounded UTF-8 chunks, with a 1 MiB source limit and a 32 KiB default chunk size. A nonzero **offset** requires **expected_sha256** from the previous response. Each call fetches and hashes the complete selected source again. Active logs can change between calls; a changed digest requires restarting at offset 0. Full mode preserves missing-log **404**, expired-log **410**, and temporarily unavailable **503** errors. It never substitutes the tail for an expired full log.
 
 The service can start without Tines settings so clients can discover its tools. Calls that need Tines data require a server-side API token and **TINES_BASE_URL**.
 

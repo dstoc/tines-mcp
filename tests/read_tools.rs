@@ -288,6 +288,46 @@ fn artifact_detail(
     })
 }
 
+fn run_detail(run_id: &str, issue_id: &str) -> Value {
+    json!({
+        "id": run_id,
+        "issue_id": issue_id,
+        "issue_ref": {"project_name": "Project", "number": 7, "title": "Run issue"},
+        "runner_id": "runner-a",
+        "runner_name": "Runner A",
+        "status": "completed",
+        "outcome": "stalled",
+        "tier": "balanced",
+        "model": null,
+        "requested_effort": null,
+        "resolved_effort": null,
+        "effort_source": null,
+        "effort_application_status": "unknown",
+        "effort_application_evidence": null,
+        "usage": null,
+        "state_id_at_start": "state-a",
+        "state_at_start_name": "Implement",
+        "state_id_at_end": null,
+        "state_at_end_name": null,
+        "provider_session_id": null,
+        "provider_url": null,
+        "turn_count": null,
+        "conversation_turn_count": null,
+        "resumed_from_run_id": null,
+        "resume_expires_at": null,
+        "resume_fallback_reason": null,
+        "error": null,
+        "created_at": 1793105874096_i64,
+        "started_at": 1793105875000_i64,
+        "ended_at": 1793105876000_i64,
+        "log": "tail contents",
+        "log_bytes_dropped": 12,
+        "log_full_bytes": 25,
+        "log_raw_bytes": 0,
+        "log_expired": false
+    })
+}
+
 fn sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
@@ -342,6 +382,10 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             "get_context",
             "get_issue_context",
             "get_issue_journal",
+            "list_runs",
+            "get_run",
+            "get_run_log",
+            "explain_dispatch",
         ]
     );
     assert!(
@@ -386,6 +430,26 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             .find(|tool| tool["name"] == "get_workflow")
             .unwrap()["inputSchema"]["required"],
         json!(["workflow_id"])
+    );
+    let list_runs = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_runs")
+        .unwrap();
+    assert_eq!(
+        list_runs["inputSchema"]["properties"]["workflow_id"]["type"],
+        json!(["string", "null"])
+    );
+    assert!(
+        list_runs["inputSchema"]["properties"]
+            .get("status")
+            .is_none()
+    );
+    assert_eq!(
+        tools
+            .iter()
+            .find(|tool| tool["name"] == "get_run_log")
+            .unwrap()["inputSchema"]["required"],
+        json!(["run_id", "mode"])
     );
     let list_context = tools
         .iter()
@@ -1198,7 +1262,16 @@ async fn owner_and_member_issue_projections_keep_native_missing_and_redacted_fie
             "owner": {"id": "owner-a", "name": "Owner"}
         },
         "state": {"id": "state-open", "name": "Open"},
-        "latest_run": {"status": "running", "run_id": "run-a"},
+        "latest_run": {
+            "id": "run-a",
+            "status": "running",
+            "outcome": null,
+            "started_at": 1793105875000_i64,
+            "ended_at": null,
+            "contributor": {"id": "contributor-a", "name": "A member"},
+            "runner_name": "Runner A",
+            "stage": "Implement"
+        },
         "my_choice": {"value": "unset", "source": null},
         "capabilities": {"execute": false}
     });
@@ -1207,6 +1280,11 @@ async fn owner_and_member_issue_projections_keep_native_missing_and_redacted_fie
     assert_eq!(member_result["data"], member);
     assert!(member_result["data"].get("project_id").is_none());
     assert!(member_result["data"].get("effective_state").is_none());
+    assert_eq!(
+        member_result["data"]["latest_run"]["contributor"]["name"],
+        "A member"
+    );
+    assert!(member_result["data"]["latest_run"].get("usage").is_none());
     assert_eq!(
         upstream.state.requests(),
         ["/api/v1/issues/issue-owner", "/api/v1/issues/issue-member"]
@@ -1796,4 +1874,324 @@ async fn direct_context_and_issue_context_reads_block_excluded_ownership() {
         ]
     );
     upstream.task.abort();
+}
+
+#[tokio::test]
+async fn list_runs_preserves_status_and_outcome_and_uses_native_filters() {
+    let run = json!({
+        "id": "run-a",
+        "issue_id": "issue-a",
+        "issue_ref": {"project_name": "Project", "number": 7, "title": "Run issue"},
+        "status": "completed",
+        "outcome": "stalled"
+    });
+    let upstream = start_mock(json!({})).await;
+    upstream.state.set_response(
+        "/api/v1/runs",
+        json!({"items": [run.clone()], "next_cursor": "next+/="}),
+    );
+    let app = configured_app(&upstream, &[]);
+
+    let result = call_tool(
+        app.clone(),
+        "list_runs",
+        json!({
+            "issue_id": "issue-a",
+            "project_id": "project-a",
+            "runner_id": "runner-a",
+            "workflow_id": "workflow-a",
+            "state_id": "state-a",
+            "active": true,
+            "limit": 25,
+            "cursor": "opaque+/="
+        }),
+    )
+    .await;
+    assert_eq!(result["data"]["items"], json!([run]));
+    assert_eq!(result["data"]["next_cursor"], "next+/=");
+    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(
+        decoded_query(&upstream.state.requests()[0]),
+        [
+            ("issue".to_owned(), "issue-a".to_owned()),
+            ("project".to_owned(), "project-a".to_owned()),
+            ("runner".to_owned(), "runner-a".to_owned()),
+            ("workflow".to_owned(), "workflow-a".to_owned()),
+            ("state".to_owned(), "state-a".to_owned()),
+            ("active".to_owned(), "1".to_owned()),
+            ("limit".to_owned(), "25".to_owned()),
+            ("cursor".to_owned(), "opaque+/=".to_owned())
+        ]
+    );
+
+    let invalid_state = call_tool(app.clone(), "list_runs", json!({"state_id": "state-a"})).await;
+    assert_eq!(invalid_state["error"]["code"], "invalid_input");
+    let invalid_active = call_tool(app, "list_runs", json!({"active": false})).await;
+    assert_eq!(invalid_active["error"]["code"], "invalid_input");
+    assert_eq!(upstream.state.requests().len(), 1);
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn run_exclusions_resolve_current_owner_and_fail_closed_for_direct_reads() {
+    let upstream = start_mock(json!({})).await;
+    upstream.state.set_response(
+        "/api/v1/runs",
+        json!({
+            "items": [
+                {"id": "run-visible", "issue_id": "issue-visible"},
+                {"id": "run-hidden", "issue_id": "issue-member"}
+            ],
+            "next_cursor": "keep-going"
+        }),
+    );
+    upstream.state.set_response(
+        "/api/v1/issues/issue-visible",
+        json!({"id": "issue-visible", "project_id": "project-visible", "number": 4}),
+    );
+    upstream.state.set_response(
+        "/api/v1/issues/issue-member",
+        json!({
+            "mode": "member",
+            "id": "issue-member",
+            "project": {"id": "project-hidden", "name": "Hidden", "owner": {"id": "owner"}},
+            "number": 9
+        }),
+    );
+    upstream.state.set_response(
+        "/api/v1/runs/run-hidden",
+        run_detail("run-hidden", "issue-member"),
+    );
+    let app = configured_app(&upstream, &["project-hidden"]);
+
+    let page = call_tool(app.clone(), "list_runs", json!({})).await;
+    assert_eq!(
+        page["data"]["items"],
+        json!([{"id": "run-visible", "issue_id": "issue-visible"}])
+    );
+    assert_eq!(page["data"]["next_cursor"], "keep-going");
+    assert_eq!(
+        page["meta"]["links"][0]["href"],
+        format!("{}/issues/project-visible/4", upstream.base_url)
+    );
+
+    let direct = call_tool(app.clone(), "get_run", json!({"run_id": "run-hidden"})).await;
+    assert_eq!(direct["error"]["source"], "visibility");
+    assert!(direct["data"].is_null());
+    assert!(
+        !upstream
+            .state
+            .requests()
+            .iter()
+            .any(|path| path.ends_with("/log"))
+    );
+
+    let dispatch = call_tool(app, "explain_dispatch", json!({"issue_id": "issue-member"})).await;
+    assert_eq!(dispatch["error"]["source"], "visibility");
+    assert!(
+        !upstream
+            .state
+            .requests()
+            .iter()
+            .any(|path| path.ends_with("/dispatch"))
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn get_run_keeps_native_status_outcome_and_dispatch_explanation_separate() {
+    let detail = run_detail("run-a", "issue-a");
+    let dispatch = json!({
+        "eligible": false,
+        "checks": [{"name": "ready", "ok": false, "detail": "blocked"}],
+        "pin": null,
+        "matched_rule": null,
+        "ambiguous_rules": [],
+        "targets": [],
+        "parked": false,
+        "attempt_count": 1,
+        "attempt_limit": 3,
+        "active_run": null,
+        "queue_position": null,
+        "verdict": "Blocked"
+    });
+    let upstream = start_mock(json!({})).await;
+    upstream
+        .state
+        .set_response("/api/v1/runs/run-a", detail.clone());
+    upstream.state.set_response(
+        "/api/v1/issues/issue-a",
+        json!({"id": "issue-a", "project_id": "project-a", "number": 7, "project_name": "Project"}),
+    );
+    upstream
+        .state
+        .set_response("/api/v1/issues/issue-a/dispatch", dispatch.clone());
+    let app = configured_app(&upstream, &[]);
+
+    let run = call_tool(app.clone(), "get_run", json!({"run_id": "run-a"})).await;
+    assert_eq!(run["data"], detail);
+    assert_eq!(run["data"]["status"], "completed");
+    assert_eq!(run["data"]["outcome"], "stalled");
+    assert_eq!(run["meta"]["links"][0]["label"], "Open issue Project/7");
+
+    let explanation = call_tool(app, "explain_dispatch", json!({"issue_id": "issue-a"})).await;
+    assert_eq!(explanation["data"], dispatch);
+    assert_eq!(explanation["data"]["eligible"], false);
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/runs/run-a",
+            "/api/v1/issues/issue-a",
+            "/api/v1/issues/issue-a",
+            "/api/v1/issues/issue-a/dispatch"
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn run_log_tail_and_full_sources_are_bounded_and_continuations_check_the_digest() {
+    let upstream = start_mock(json!({})).await;
+    upstream
+        .state
+        .set_response("/api/v1/runs/run-a", run_detail("run-a", "issue-a"));
+    upstream.state.set_response(
+        "/api/v1/issues/issue-a",
+        json!({"id": "issue-a", "project_id": "project-a", "number": 7, "project_name": "Project"}),
+    );
+    upstream.state.set_replies(
+        "/api/v1/runs/run-a/log",
+        [
+            MockReply::bytes("abcdef", "text/plain; charset=utf-8"),
+            MockReply::bytes("abc", "text/plain; charset=utf-8"),
+        ],
+    );
+    let app = configured_app(&upstream, &[]);
+
+    let tail = call_tool(
+        app.clone(),
+        "get_run_log",
+        json!({"run_id": "run-a", "mode": "tail", "chunk_bytes": 4}),
+    )
+    .await;
+    assert_eq!(tail["data"]["content"], "tail");
+    assert_eq!(tail["data"]["total_bytes"], "tail contents".len());
+    assert_eq!(tail["data"]["next_offset"], 4);
+    assert_eq!(tail["data"]["run"]["log_bytes_dropped"], 12);
+    assert_eq!(tail["data"]["run"]["log_expired"], false);
+
+    let full = call_tool(
+        app.clone(),
+        "get_run_log",
+        json!({"run_id": "run-a", "mode": "full", "chunk_bytes": 4}),
+    )
+    .await;
+    assert_eq!(full["data"]["source"]["mode"], "full");
+    assert_eq!(full["data"]["content"], "abcd");
+    assert_eq!(full["data"]["total_bytes"], 6);
+    assert_eq!(full["data"]["sha256"], sha256(b"abcdef"));
+
+    let changed = call_tool(
+        app.clone(),
+        "get_run_log",
+        json!({
+            "run_id": "run-a",
+            "mode": "full",
+            "offset": 4,
+            "chunk_bytes": 4,
+            "expected_sha256": full["data"]["sha256"]
+        }),
+    )
+    .await;
+    assert_eq!(changed["error"]["code"], "content_changed");
+    assert_eq!(changed["error"]["status"], Value::Null);
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn oversized_full_run_log_preserves_run_metadata_and_issue_link() {
+    let upstream = start_mock(json!({})).await;
+    upstream.state.set_response(
+        "/api/v1/runs/run-large",
+        run_detail("run-large", "issue-large"),
+    );
+    upstream.state.set_response(
+        "/api/v1/issues/issue-large",
+        json!({"id": "issue-large", "project_id": "project-a", "number": 7, "project_name": "Project"}),
+    );
+    upstream.state.set_replies(
+        "/api/v1/runs/run-large/log",
+        [MockReply::bytes(
+            vec![b'x'; 1024 * 1024 + 1],
+            "text/plain; charset=utf-8",
+        )],
+    );
+    let app = configured_app(&upstream, &[]);
+
+    let result = call_tool(
+        app,
+        "get_run_log",
+        json!({"run_id": "run-large", "mode": "full"}),
+    )
+    .await;
+
+    assert_eq!(result["error"]["source"], "schema");
+    assert_eq!(result["error"]["status"], 200);
+    assert_eq!(result["error"]["code"], "content_source_too_large");
+    assert_eq!(result["error"]["details"]["limit_bytes"], 1024 * 1024);
+    assert_eq!(
+        result["data"]["source"],
+        json!({"run_id": "run-large", "mode": "full"})
+    );
+    assert_eq!(result["data"]["run"]["status"], "completed");
+    assert_eq!(result["data"]["run"]["outcome"], "stalled");
+    assert_eq!(result["data"]["run"]["log_bytes_dropped"], 12);
+    assert_eq!(result["data"]["run"]["log_full_bytes"], 25);
+    assert_eq!(result["data"]["run"]["log_raw_bytes"], 0);
+    assert_eq!(result["data"]["run"]["log_expired"], false);
+    assert!(result["data"].get("content").is_none());
+    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(
+        result["meta"]["links"][0]["href"],
+        format!("{}/issues/project-a/7", upstream.base_url)
+    );
+    assert_eq!(upstream.state.requests().len(), 3);
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn full_run_log_preserves_missing_expired_and_temporarily_unavailable_statuses() {
+    for status in [
+        StatusCode::NOT_FOUND,
+        StatusCode::GONE,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ] {
+        let upstream = start_mock(json!({})).await;
+        upstream
+            .state
+            .set_response("/api/v1/runs/run-a", run_detail("run-a", "issue-a"));
+        upstream.state.set_response(
+            "/api/v1/issues/issue-a",
+            json!({"id": "issue-a", "project_id": "project-a", "number": 7}),
+        );
+        upstream.state.set_replies(
+            "/api/v1/runs/run-a/log",
+            [MockReply::json_with_status(
+                status,
+                json!({"error": {"code": "run_log_error", "message": "unavailable"}}),
+            )],
+        );
+        let app = configured_app(&upstream, &[]);
+
+        let result = call_tool(
+            app,
+            "get_run_log",
+            json!({"run_id": "run-a", "mode": "full"}),
+        )
+        .await;
+        assert_eq!(result["error"]["source"], "upstream");
+        assert_eq!(result["error"]["status"], status.as_u16());
+        assert!(result["data"].is_null());
+        upstream.task.abort();
+    }
 }

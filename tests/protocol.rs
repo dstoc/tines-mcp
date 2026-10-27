@@ -215,6 +215,10 @@ async fn legacy_initialization_and_tool_discovery_are_stateless() {
             "get_context",
             "get_issue_context",
             "get_issue_journal",
+            "list_runs",
+            "get_run",
+            "get_run_log",
+            "explain_dispatch",
         ]
     );
 }
