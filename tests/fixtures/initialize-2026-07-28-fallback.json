@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2026-07-28",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "protocol-fixture",
+      "version": "1.0.0"
+    }
+  }
+}
