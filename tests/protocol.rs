@@ -208,6 +208,10 @@ async fn legacy_initialization_and_tool_discovery_are_stateless() {
             "get_workflow",
             "list_labels",
             "list_events",
+            "list_context",
+            "get_context",
+            "get_issue_context",
+            "get_issue_journal",
         ]
     );
 }

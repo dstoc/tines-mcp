@@ -126,6 +126,31 @@ impl ReadTools {
             tool::<ListEventsArgs>(
                 "list_events",
                 "Read one live page of existing Tines activity events. Supports project, issue, event type, state, inclusive since, exclusive until, and native cursor filters. Keep filters unchanged when continuing; the cursor is not a durable replay checkpoint.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
+            Tool::new(
+                "list_context",
+                "List one native page of raw context items. Scope filters use Tines scope-includes semantics; exact=true requires only the selected scope dimensions. Use get_issue_context for assembled inherited guidance.",
+                schema_for_type::<ListContextArgs>(),
+            )
+            .with_annotations(annotations())
+            .with_raw_output_schema(output_schema.clone()),
+            tool::<GetContextArgs>(
+                "get_context",
+                "Read one raw context item by its immutable ID. This is not the effective context for an issue; preserve its native version and any missing or redacted fields.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
+            tool::<GetIssueContextArgs>(
+                "get_issue_context",
+                "Read the effective context assembled for one issue, including inherited parts and shared-project metadata when returned by Tines.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
+            tool::<GetIssueJournalArgs>(
+                "get_issue_journal",
+                "Resolve the guidance journal and its run or current-state anchor for one issue. This is not chronological activity; use list_events for history.",
                 output_schema,
             )
             .with_annotations(annotations()),
@@ -339,7 +364,7 @@ impl ReadTools {
                             &Query::new(),
                         )
                         .await?;
-                    let returned_id = required_string(&data, "id", status, "issue")?;
+                    let returned_id = required_string(&data, "id", status, "issue_id")?;
                     if returned_id != issue_id {
                         return Err(schema_error(
                             status,
@@ -522,7 +547,7 @@ impl ReadTools {
             }
             if let Some(issue_id) = args.issue_id.as_deref() {
                 if call.has_project_exclusions() {
-                    let project_id = current_issue_project_id(&call, issue_id).await?;
+                    let project_id = resolve_issue_project_id(&call, issue_id).await?;
                     reject_excluded(&call, &project_id, "issue")?;
                 }
                 query.append("issue", issue_id);
@@ -559,6 +584,185 @@ impl ReadTools {
                     message: "Tines returned the same continuation cursor for this event page.",
                 });
             }
+            Ok(ReadData::new(data))
+        })
+        .await
+    }
+
+    async fn list_context(
+        &self,
+        args: ListContextArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        for (field, value) in [
+            ("project_id", args.project_id.as_deref()),
+            ("state_id", args.state_id.as_deref()),
+            ("label_id", args.label_id.as_deref()),
+            ("issue_id", args.issue_id.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return validation(field, "must be a non-empty immutable ID");
+            }
+        }
+        if args
+            .limit
+            .is_some_and(|limit| !(1..=MAX_PAGE_SIZE).contains(&limit))
+        {
+            return validation("limit", "must be between 1 and 100");
+        }
+        if args
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.is_empty() || cursor.chars().count() > MAX_CURSOR_CHARS)
+        {
+            return validation(
+                "cursor",
+                "must be non-empty and no longer than 4096 characters",
+            );
+        }
+
+        self.execute(cancellation, move |call| async move {
+            if let Some(project_id) = args.project_id.as_deref() {
+                reject_excluded(&call, project_id, "project")?;
+            }
+            if let Some(issue_id) = args.issue_id.as_deref()
+                && call.has_project_exclusions()
+            {
+                let project_id = resolve_issue_project_id(&call, issue_id).await?;
+                reject_excluded(&call, &project_id, "context")?;
+            }
+
+            let mut query = Query::new();
+            append_optional(&mut query, "project", args.project_id.as_deref());
+            append_optional(&mut query, "state", args.state_id.as_deref());
+            append_optional(&mut query, "label", args.label_id.as_deref());
+            append_optional(&mut query, "issue", args.issue_id.as_deref());
+            append_optional(
+                &mut query,
+                "kind",
+                args.kind.as_ref().map(ContextKind::as_str),
+            );
+            append_optional(&mut query, "q", args.search.as_deref());
+            if let Some(exact) = args.exact {
+                query.append("exact", exact);
+            }
+            if let Some(archived) = args.archived {
+                query.append("archived", archived.as_str());
+            }
+            if let Some(limit) = args.limit {
+                query.append("limit", limit);
+            }
+            append_optional(&mut query, "cursor", args.cursor.as_deref());
+
+            let (mut data, status) = call.get_json_with_status(Route::Context, &query).await?;
+            let items = collection_items_mut(&mut data, status, "context")?;
+            if call.has_project_exclusions() {
+                retain_visible_context_items(items, &call, status).await?;
+            }
+            let next_cursor = required_cursor(&data, status)?;
+            if args
+                .cursor
+                .as_deref()
+                .is_some_and(|cursor| next_cursor == Some(cursor))
+            {
+                return Err(TinesError::Schema {
+                    status: Some(status),
+                    code: "repeated_cursor",
+                    message: "Tines returned the same continuation cursor for this context page.",
+                });
+            }
+            Ok(ReadData::new(data))
+        })
+        .await
+    }
+
+    async fn get_context(
+        &self,
+        args: GetContextArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.context_id.trim().is_empty() {
+            return validation("context_id", "must be a non-empty context ID");
+        }
+        self.execute(cancellation, move |call| async move {
+            let (data, status) = call
+                .get_json_with_status(
+                    Route::ContextItem {
+                        context_id: &args.context_id,
+                    },
+                    &Query::new(),
+                )
+                .await?;
+            let id = data
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    schema_error(status, "Tines context response was missing its ID.")
+                })?;
+            if id != args.context_id {
+                return Err(schema_error(
+                    status,
+                    "Tines returned a different context item than requested.",
+                ));
+            }
+            if call.has_project_exclusions() {
+                ensure_visible_context_item(&data, &call, status).await?;
+            }
+            Ok(ReadData::new(data))
+        })
+        .await
+    }
+
+    async fn get_issue_context(
+        &self,
+        args: GetIssueContextArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.issue_id.trim().is_empty() {
+            return validation("issue_id", "must be a non-empty issue ID");
+        }
+        self.execute(cancellation, move |call| async move {
+            if call.has_project_exclusions() {
+                let project_id = resolve_issue_project_id(&call, &args.issue_id).await?;
+                reject_excluded(&call, &project_id, "issue")?;
+            }
+            let (data, status) = call
+                .get_json_with_status(
+                    Route::IssueContext {
+                        issue_id: &args.issue_id,
+                    },
+                    &Query::new(),
+                )
+                .await?;
+            require_object(&data, status, "effective context")?;
+            Ok(ReadData::new(data))
+        })
+        .await
+    }
+
+    async fn get_issue_journal(
+        &self,
+        args: GetIssueJournalArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.issue_id.trim().is_empty() {
+            return validation("issue_id", "must be a non-empty issue ID");
+        }
+        self.execute(cancellation, move |call| async move {
+            if call.has_project_exclusions() {
+                let project_id = resolve_issue_project_id(&call, &args.issue_id).await?;
+                reject_excluded(&call, &project_id, "issue")?;
+            }
+            let (data, status) = call
+                .get_json_with_status(
+                    Route::IssueJournal {
+                        issue_id: &args.issue_id,
+                    },
+                    &Query::new(),
+                )
+                .await?;
+            require_object(&data, status, "issue journal")?;
             Ok(ReadData::new(data))
         })
         .await
@@ -623,6 +827,16 @@ impl ServerHandler for ReadTools {
             "get_workflow" => self.get_workflow(parse_args(&request)?, cancellation).await,
             "list_labels" => self.list_labels(parse_args(&request)?, cancellation).await,
             "list_events" => self.list_events(parse_args(&request)?, cancellation).await,
+            "list_context" => self.list_context(parse_args(&request)?, cancellation).await,
+            "get_context" => self.get_context(parse_args(&request)?, cancellation).await,
+            "get_issue_context" => {
+                self.get_issue_context(parse_args(&request)?, cancellation)
+                    .await
+            }
+            "get_issue_journal" => {
+                self.get_issue_journal(parse_args(&request)?, cancellation)
+                    .await
+            }
             _ => return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>()),
         };
         Ok(result.into())
@@ -768,6 +982,74 @@ impl TimeBound {
         match self {
             Self::EpochMilliseconds(value) => value.to_string(),
             Self::Iso8601(value) => value.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListContextArgs {
+    /// Restrict to context items scoped to this immutable project ID.
+    project_id: Option<String>,
+    /// Restrict to items scoped to this immutable workflow-state ID.
+    state_id: Option<String>,
+    /// Restrict to items scoped to this immutable label ID.
+    label_id: Option<String>,
+    /// Restrict to items scoped to this immutable issue ID.
+    issue_id: Option<String>,
+    /// Restrict to one native context-item kind.
+    kind: Option<ContextKind>,
+    /// Literal name or description substring search.
+    search: Option<String>,
+    /// Require items to have only the selected scope dimensions.
+    exact: Option<bool>,
+    /// Without an explicit project or issue, choose which archived-project items to include.
+    archived: Option<ArchivedFilter>,
+    /// Native page size from 1 through 100. The Tines default is 50.
+    limit: Option<u32>,
+    /// Opaque native cursor from the previous page; keep filters unchanged when continuing.
+    cursor: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetContextArgs {
+    /// Immutable context-item ID.
+    context_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetIssueContextArgs {
+    /// Immutable issue ID.
+    issue_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetIssueJournalArgs {
+    /// Immutable issue ID.
+    issue_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum ContextKind {
+    Prompt,
+    Skill,
+    Repo,
+    Artifact,
+    Env,
+}
+
+impl ContextKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Skill => "skill",
+            Self::Repo => "repo",
+            Self::Artifact => "artifact",
+            Self::Env => "env",
         }
     }
 }
@@ -955,6 +1237,7 @@ fn collection_items_mut<'a>(
                 "Tines workflow response was missing an items array.",
             ),
             "events" => schema_error(status, "Tines event response was missing an items array."),
+            "context" => schema_error(status, "Tines context response was missing an items array."),
             _ => schema_error(status, "Tines label response was missing an items array."),
         })
 }
@@ -994,7 +1277,7 @@ async fn retain_visible_event_items(
         let current_project = if let Some(issue_id) = issue_id {
             match event_issue_project_id(&item, status)? {
                 Some(project_id) => Some(project_id.to_owned()),
-                None => Some(current_issue_project_id(call, issue_id).await?),
+                None => Some(resolve_issue_project_id(call, issue_id).await?),
             }
         } else {
             None
@@ -1042,33 +1325,6 @@ fn event_issue_project_id(event: &Value, status: u16) -> Result<Option<&str>, Ti
             "Tines event issue reference was neither an object nor null.",
         )),
     }
-}
-
-async fn current_issue_project_id(
-    call: &TinesToolCall,
-    issue_id: &str,
-) -> Result<String, TinesError> {
-    let (issue, status, should_cache) = match call.cached_parent_issue(issue_id) {
-        Some(issue) => (issue, 200, false),
-        None => {
-            let (issue, status) = call
-                .get_json_with_status(Route::Issue { issue_id }, &Query::new())
-                .await?;
-            (issue, status, true)
-        }
-    };
-    let returned_id = required_string(&issue, "id", status, "issue")?;
-    if returned_id != issue_id {
-        return Err(schema_error(
-            status,
-            "Tines returned a different issue during event visibility checks.",
-        ));
-    }
-    let project_id = issue_project_id(&issue, status)?.to_owned();
-    if should_cache {
-        call.remember_parent_issue(issue_id.to_owned(), issue);
-    }
-    Ok(project_id)
 }
 
 fn required_cursor(data: &Value, status: u16) -> Result<Option<&str>, TinesError> {
@@ -1144,6 +1400,9 @@ fn required_string<'a>(
                 status,
                 "Tines issue response was missing its immutable project ID.",
             ),
+            "issue_id" => {
+                schema_error(status, "Tines issue response was missing its immutable ID.")
+            }
             _ => schema_error(
                 status,
                 "Tines workflow response was missing its immutable ID.",
@@ -1175,4 +1434,113 @@ fn issue_project_id(data: &Value, status: u16) -> Result<&str, TinesError> {
         status,
         "Tines issue response was missing its current project ID.",
     ))
+}
+
+async fn resolve_issue_project_id(
+    call: &TinesToolCall,
+    issue_id: &str,
+) -> Result<String, TinesError> {
+    let cached = call.cached_parent_issue(issue_id);
+    let was_cached = cached.is_some();
+    let (issue, status) = match cached {
+        Some(issue) => (issue, 200),
+        None => {
+            call.get_json_with_status(Route::Issue { issue_id }, &Query::new())
+                .await?
+        }
+    };
+    let returned_id = required_string(&issue, "id", status, "issue_id")?;
+    if returned_id != issue_id {
+        return Err(schema_error(
+            status,
+            "Tines returned a different issue during ownership resolution.",
+        ));
+    }
+    let project_id = issue_project_id(&issue, status)?.to_owned();
+    if !was_cached {
+        call.remember_parent_issue(issue_id.to_owned(), issue);
+    }
+    Ok(project_id)
+}
+
+async fn retain_visible_context_items(
+    items: &mut Vec<Value>,
+    call: &TinesToolCall,
+    status: u16,
+) -> Result<(), TinesError> {
+    let mut visible = Vec::with_capacity(items.len());
+    for item in std::mem::take(items) {
+        if context_item_is_visible(&item, call, status).await? {
+            visible.push(item);
+        }
+    }
+    *items = visible;
+    Ok(())
+}
+
+async fn ensure_visible_context_item(
+    item: &Value,
+    call: &TinesToolCall,
+    status: u16,
+) -> Result<(), TinesError> {
+    if context_item_is_visible(item, call, status).await? {
+        Ok(())
+    } else {
+        Err(TinesError::Visibility {
+            resource: "context",
+        })
+    }
+}
+
+async fn context_item_is_visible(
+    item: &Value,
+    call: &TinesToolCall,
+    status: u16,
+) -> Result<bool, TinesError> {
+    let scope = item
+        .get("scope")
+        .and_then(Value::as_object)
+        .ok_or_else(|| schema_error(status, "Tines context item was missing its scope object."))?;
+    let project_id = optional_scope_id(scope, "project_id", status)?;
+    let issue_id = optional_scope_id(scope, "issue_id", status)?;
+
+    if project_id.is_some_and(|id| call.is_project_excluded(id)) {
+        return Ok(false);
+    }
+    if let Some(issue_id) = issue_id {
+        let current_project_id = resolve_issue_project_id(call, issue_id).await?;
+        if call.is_project_excluded(&current_project_id) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn optional_scope_id<'a>(
+    scope: &'a Map<String, Value>,
+    field: &'static str,
+    status: u16,
+) -> Result<Option<&'a str>, TinesError> {
+    match scope.get(field) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value)),
+        _ => Err(schema_error(
+            status,
+            "Tines context scope was missing or malformed an ownership field.",
+        )),
+    }
+}
+
+fn require_object(data: &Value, status: u16, resource: &'static str) -> Result<(), TinesError> {
+    if data.is_object() {
+        Ok(())
+    } else {
+        Err(schema_error(
+            status,
+            match resource {
+                "effective context" => "Tines effective-context response was not an object.",
+                _ => "Tines issue-journal response was not an object.",
+            },
+        ))
+    }
 }
