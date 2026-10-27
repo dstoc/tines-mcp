@@ -957,16 +957,29 @@ impl TinesError {
     }
 
     pub fn to_mcp_result(&self) -> rmcp::model::CallToolResult {
+        self.to_mcp_result_with_context(Value::Null, Vec::new())
+    }
+
+    /// Builds an error result that retains safe metadata collected before the failure.
+    pub fn to_mcp_result_with_context(
+        &self,
+        data: Value,
+        links: Vec<Value>,
+    ) -> rmcp::model::CallToolResult {
         let (source, code, message, status, retry_after, diagnostic_id) = self.fields();
         let details = match self {
             Self::Upstream { details, .. } => details.clone(),
             Self::ContentTooLarge { limit_bytes, .. } => Some(json!({"limit_bytes": limit_bytes})),
             _ => None,
         };
-        mcp_result(
+        let result = mcp_result(
             json!({
-                "data": null,
-                "meta": empty_meta(),
+                "data": data,
+                "meta": {
+                    "observed_at_ms": now_millis(),
+                    "links": links,
+                    "omissions": [],
+                },
                 "error": {
                     "source": source,
                     "code": code,
@@ -978,7 +991,14 @@ impl TinesError {
                 }
             }),
             true,
-        )
+        );
+        if serialized_size(&result) > MAX_TOOL_RESULT_BYTES {
+            return Self::ResultTooLarge {
+                limit_bytes: MAX_TOOL_RESULT_BYTES,
+            }
+            .to_mcp_result();
+        }
+        result
     }
 }
 
@@ -1065,14 +1085,6 @@ fn mcp_result(value: Value, is_error: bool) -> rmcp::model::CallToolResult {
     };
     result.structured_content = Some(value);
     result
-}
-
-fn empty_meta() -> Value {
-    json!({
-        "observed_at_ms": now_millis(),
-        "links": [],
-        "omissions": [],
-    })
 }
 
 fn now_millis() -> u128 {

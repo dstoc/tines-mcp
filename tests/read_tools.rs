@@ -914,7 +914,7 @@ async fn folder_content_requires_a_path_and_link_artifacts_remain_references() {
 }
 
 #[tokio::test]
-async fn artifact_content_source_over_one_mib_fails_without_returning_bytes() {
+async fn artifact_content_source_over_one_mib_preserves_metadata_without_returning_bytes() {
     let detail = artifact_detail(
         "large-id",
         "issue-large",
@@ -949,8 +949,24 @@ async fn artifact_content_source_over_one_mib_fails_without_returning_bytes() {
     );
     assert_eq!(result["error"]["details"]["limit_bytes"], 1024 * 1024);
     assert!(result["error"]["diagnostic_id"].is_number());
-    assert!(result["data"].is_null());
-    assert_eq!(upstream.state.requests().len(), 3);
+    assert_eq!(
+        result["data"]["source"],
+        json!({
+            "issue_id": "issue-large",
+            "artifact_id": "large-id",
+            "name": "large-file",
+            "version": 1,
+            "path": null
+        })
+    );
+    assert_eq!(result["data"]["mime_type"], "application/octet-stream");
+    assert!(result["data"].get("content").is_none());
+    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(
+        result["meta"]["links"][0]["href"],
+        format!("{}/issues/project-a/8", upstream.base_url)
+    );
+    assert_eq!(upstream.state.requests().len(), 4);
     upstream.task.abort();
 }
 

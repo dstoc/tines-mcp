@@ -41,6 +41,10 @@ pub fn bounded_content(
             message: "must be between 4 and 32768",
         });
     }
+    let sha256 = sha256_hex(bytes);
+    if expected_sha256.is_some_and(|expected| !expected.eq_ignore_ascii_case(&sha256)) {
+        return Err(content_changed());
+    }
     let offset = usize::try_from(offset).map_err(|_| TinesError::Validation {
         field: "offset",
         message: "is outside the supported range",
@@ -50,11 +54,6 @@ pub fn bounded_content(
             field: "offset",
             message: "must not exceed the source byte length",
         });
-    }
-
-    let sha256 = sha256_hex(bytes);
-    if expected_sha256.is_some_and(|expected| !expected.eq_ignore_ascii_case(&sha256)) {
-        return Err(content_changed());
     }
 
     let is_text = text_source || is_text_mime_type(mime_type);
@@ -159,7 +158,8 @@ fn text_chunk_end(text: &str, offset: usize, max_bytes: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::bounded_content;
+    use super::{bounded_content, sha256_hex};
+    use crate::tines::TinesError;
 
     #[test]
     fn bounded_text_chunks_end_before_an_incomplete_utf8_sequence() {
@@ -200,5 +200,30 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn shrinking_source_with_old_continuation_digest_is_content_changed() {
+        let error = match bounded_content(
+            b"abc",
+            true,
+            Some("text/plain"),
+            4,
+            4,
+            Some(&sha256_hex(b"abcdef")),
+            200,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("a changed source should fail before validating its old offset"),
+        };
+
+        assert!(matches!(
+            error,
+            TinesError::Schema {
+                status: None,
+                code: "content_changed",
+                ..
+            }
+        ));
     }
 }
