@@ -71,11 +71,7 @@ The build stage uses Rust 1.98.1 and `Cargo.lock`. The runtime image includes th
 
 Podman reads `.dockerignore` when `.containerignore` is absent ([Podman build reference](https://docs.podman.io/en/stable/markdown/podman-build.1.html)). The ignore file limits the build context to the Cargo files, toolchain pin, and Rust source. Local environment files, Git data, and build output are excluded.
 
-For a local container, create a Podman secret from an existing protected token file. This imports the file into Podman's secret store; it does not create a Tines credential. The container process runs as UID 10001, so mount the secret for that UID:
-
-```sh
-podman secret create tines-api-token /secure/path/tines-api-token
-```
+Set `TINES_API_TOKEN` in the host environment before running this command.
 
 Publish the port only on host loopback. The process must bind to the container interface so the published port can reach it:
 
@@ -85,12 +81,9 @@ podman run --rm --stop-timeout 60 \
   --env MCP_BIND_ADDR=0.0.0.0:8080 \
   --env MCP_ALLOWED_HOSTS=127.0.0.1:8080 \
   --env TINES_BASE_URL=https://tenant.tines.com \
-  --env TINES_API_TOKEN_FILE=/run/secrets/tines-api-token \
-  --secret tines-api-token,target=tines-api-token,uid=10001,gid=10001,mode=0400 \
+  --env TINES_API_TOKEN \
   tines-mcp:local
 ```
-
-Provide the token file outside the image. If your runtime manages environment secrets, you can set `TINES_API_TOKEN` instead. Set exactly one token source. Do not pass the token as a command-line argument or build argument.
 
 The command publishes port 8080 on host loopback only. The Host allowlist contains that exact host and port. If an MCP client sends an `Origin` header, set `MCP_ALLOWED_ORIGINS` to that exact origin. The default empty list rejects every request that has an `Origin` header.
 
@@ -118,46 +111,38 @@ Tines settings are validated at startup. The service rejects malformed addresses
 
 This manual setup shares the adapter's network namespace. `tines-mcp` starts first with Podman's normal outbound networking, then `tunnel-client` joins that namespace with `--network container:tines-mcp` ([Podman run reference](https://docs.podman.io/en/latest/markdown/podman-run.1.html)). Both processes can use `127.0.0.1` to reach each other. No host port is published. Any process with access to this shared namespace can call the adapter, which has no MCP-layer authentication; namespace sharing does not authenticate application requests.
 
-The example pins the current official [`tunnel-client` release v0.0.18](https://github.com/openai/tunnel-client/releases/tag/v0.0.18), published October 23, 2026. Check the [release list](https://github.com/openai/tunnel-client/releases) before changing the pin. The full image entrypoint and options below match the release's [container guide](https://github.com/openai/tunnel-client/blob/v0.0.18/docs/deployment/docker.md), [Dockerfile](https://github.com/openai/tunnel-client/blob/v0.0.18/Dockerfile), and [configuration reference](https://github.com/openai/tunnel-client/blob/v0.0.18/docs/configuration.md). The `file:/...` API key option is supported by the image; the secret value does not appear in the command or environment.
+The example pins the current official [`tunnel-client` release v0.0.18](https://github.com/openai/tunnel-client/releases/tag/v0.0.18), published October 23, 2026. Check the [release list](https://github.com/openai/tunnel-client/releases) before changing the pin. The image entrypoint and options below match the release's [container guide](https://github.com/openai/tunnel-client/blob/v0.0.18/docs/deployment/docker.md), [Dockerfile](https://github.com/openai/tunnel-client/blob/v0.0.18/Dockerfile), and [configuration reference](https://github.com/openai/tunnel-client/blob/v0.0.18/docs/configuration.md).
 
-1. Provision a tunnel in OpenAI Platform and obtain its tunnel ID and a runtime API key with Tunnels Read and Use permissions. Use a runtime key, not an admin key. Follow the current [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [`tunnel-client` onboarding guide](https://github.com/openai/tunnel-client/blob/v0.0.18/docs/onboarding.md). This walkthrough assumes these credentials already exist.
-2. Create the Podman secret `tines-api-token` with the command in the previous section if it does not already exist. Then import the tunnel runtime key file from a protected host path; this command does not create an OpenAI credential:
-
-   ```sh
-   podman secret create tunnel-control-plane-api-key /secure/path/control-plane-api-key
-   ```
-
-3. Start `tines-mcp` first. It keeps the default loopback listener on port 8080, has normal outbound connectivity to Tines, and publishes no host port:
+1. Use an existing tunnel and its ID. Before running these commands, set `TINES_API_TOKEN` and `CONTROL_PLANE_API_KEY` in your host environment. The runtime API key needs Tunnels Read and Use permissions; see the [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [`tunnel-client` onboarding guide](https://github.com/openai/tunnel-client/blob/v0.0.18/docs/onboarding.md) for setup.
+2. Start `tines-mcp` first. It keeps the default loopback listener on port 8080, has normal outbound connectivity to Tines, and publishes no host port:
 
    ```sh
    podman run --detach --name tines-mcp --stop-timeout 60 \
      --env MCP_BIND_ADDR=127.0.0.1:8080 \
      --env MCP_ALLOWED_HOSTS=127.0.0.1:8080 \
      --env TINES_BASE_URL=https://tenant.tines.com \
-     --env TINES_API_TOKEN_FILE=/run/secrets/tines-api-token \
-     --secret tines-api-token,target=tines-api-token,uid=10001,gid=10001,mode=0400 \
+     --env TINES_API_TOKEN \
      tines-mcp:local
    ```
 
    `MCP_ALLOWED_HOSTS` allows only the exact loopback host and port used by `MCP_SERVER_URL`. Origin validation remains enabled with the default empty allowlist, which rejects every present `Origin` header. Do not add a guessed origin. If an intended-client request is rejected because it carries an `Origin`, inspect the exact value in a controlled request and allow only that origin with `MCP_ALLOWED_ORIGINS` before repeating the read.
-4. Start the tunnel client after the adapter. Set its health listener to loopback port 8081 so it does not collide with the adapter's port 8080. Replace `<tunnel-id>` with the provisioned ID. The `CONTROL_PLANE_API_KEY` runtime secret is mounted as a file and passed through the supported `file:` option instead of a literal environment value:
+3. Start the tunnel client after the adapter. Set its health listener to loopback port 8081 so it does not collide with the adapter's port 8080. Replace `<tunnel-id>` with the existing tunnel ID:
 
    ```sh
    podman run --detach --name tunnel-client \
      --network container:tines-mcp \
-     --secret tunnel-control-plane-api-key,target=control-plane-api-key,uid=0,gid=0,mode=0400 \
+     --env CONTROL_PLANE_API_KEY \
      --env CONTROL_PLANE_TUNNEL_ID="<tunnel-id>" \
      --env MCP_SERVER_URL=http://127.0.0.1:8080/mcp \
      --env HEALTH_LISTEN_ADDR=127.0.0.1:8081 \
      --env LOG_LEVEL=info \
      --env LOG_FORMAT=json \
-     ghcr.io/openai/tunnel-client:v0.0.18 \
-     --control-plane.api-key=file:/run/secrets/control-plane-api-key
+     ghcr.io/openai/tunnel-client:v0.0.18
    ```
 
    This image starts `/usr/bin/tunnel-client run` by default. `MCP_SERVER_URL` points to the adapter over their shared loopback. `HEALTH_LISTEN_ADDR` also stays on loopback, and neither port is published. The tunnel client's default health port is 8080, so keep the explicit 8081 setting.
 
-5. Inspect logs and process state without publishing ports:
+4. Inspect logs and process state without publishing ports:
 
    ```sh
    podman logs --follow tines-mcp
@@ -180,7 +165,7 @@ The example pins the current official [`tunnel-client` release v0.0.18](https://
 
    The command probes `/healthz`, `/readyz`, and the control-plane poll metric over loopback in the shared namespace. A passing health check confirms process/readiness signals and a successful poll; it does not prove that the intended MCP client can complete a tool call.
 
-6. Connect the intended OpenAI MCP client through the tunnel, discover the tools, and make a safe read such as `list_projects` for an authorized Tines account. Only a successful read through that client verifies the full client-to-tunnel-to-adapter-to-Tines path, including the Tines token. Process liveness, a tunnel poll, and adapter health are not substitutes for this read.
+5. Connect the intended OpenAI MCP client through the tunnel, discover the tools, and make a safe read such as `list_projects` for an authorized Tines account. Only a successful read through that client verifies the full client-to-tunnel-to-adapter-to-Tines path, including the Tines token. Process liveness, a tunnel poll, and adapter health are not substitutes for this read.
 
 To replace `tines-mcp`, stop and remove `tunnel-client` first, then stop and remove `tines-mcp`:
 
@@ -195,7 +180,7 @@ Start the replacement adapter and recreate `tunnel-client` with `--network conta
 
 The tunnel controls access to its endpoint. It does not add authentication to this MCP server or reduce the permissions of its configured Tines token. Host and Origin validation are additional request checks, not an access-control boundary.
 
-The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration and read behavior. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 6. This repository has not performed that end-to-end check.
+The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration and read behavior. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 5. This repository has not performed that end-to-end check.
 
 ## Runtime limits
 
