@@ -13,7 +13,7 @@ use std::{
 
 use reqwest::{
     Client, Response, StatusCode,
-    header::{ACCEPT, AUTHORIZATION, HeaderValue, RETRY_AFTER},
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, RETRY_AFTER},
     redirect::Policy,
 };
 use serde_json::{Map, Value, json};
@@ -367,6 +367,36 @@ impl TinesToolCall {
         route: Route<'_>,
         query: &Query,
     ) -> Result<(Value, u16), TinesError> {
+        let (body, status, _, diagnostic_id) = self
+            .get_body_with_status(route, query, MAX_JSON_BODY_BYTES, "application/json")
+            .await?;
+        let value = serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
+            status,
+            diagnostic_id,
+        })?;
+        Ok((value, status))
+    }
+
+    /// Fetches a bounded byte response and returns its successful status and
+    /// declared MIME type without interpreting its contents.
+    pub async fn get_bytes_with_status(
+        &self,
+        route: Route<'_>,
+        query: &Query,
+        limit_bytes: usize,
+    ) -> Result<(Vec<u8>, u16, Option<String>), TinesError> {
+        self.get_body_with_status(route, query, limit_bytes, "application/octet-stream")
+            .await
+            .map(|(body, status, content_type, _)| (body, status, content_type))
+    }
+
+    async fn get_body_with_status(
+        &self,
+        route: Route<'_>,
+        query: &Query,
+        limit_bytes: usize,
+        accept: &'static str,
+    ) -> Result<(Vec<u8>, u16, Option<String>, u64), TinesError> {
         let request_permit = self
             .inner
             .request_slots
@@ -384,7 +414,7 @@ impl TinesToolCall {
             .inner
             .http
             .get(url)
-            .header(ACCEPT, "application/json")
+            .header(ACCEPT, accept)
             .header(AUTHORIZATION, self.inner.authorization.clone())
             .build()
             .map_err(|_| TinesError::Transport { diagnostic_id })?;
@@ -425,21 +455,22 @@ impl TinesToolCall {
             );
 
             if status.is_success() {
-                let body = read_bounded_body(response, MAX_JSON_BODY_BYTES)
+                let content_type = response
+                    .headers()
+                    .get(CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let body = read_bounded_body(response, limit_bytes)
                     .await
                     .map_err(|error| match error {
                         BodyReadError::TooLarge => TinesError::BodyTooLarge {
                             status: status.as_u16(),
-                            limit_bytes: MAX_JSON_BODY_BYTES,
+                            limit_bytes,
                             diagnostic_id,
                         },
                         BodyReadError::Transport => TinesError::Transport { diagnostic_id },
                     })?;
-                let value = serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
-                    status: status.as_u16(),
-                    diagnostic_id,
-                })?;
-                Ok((value, status.as_u16()))
+                Ok((body, status.as_u16(), content_type, diagnostic_id))
             } else {
                 let body = read_bounded_body(response, MAX_ERROR_BODY_BYTES).await;
                 Err(decode_upstream_error(
@@ -727,6 +758,11 @@ pub enum TinesError {
         limit_bytes: usize,
         diagnostic_id: u64,
     },
+    ContentTooLarge {
+        status: u16,
+        limit_bytes: usize,
+        diagnostic_id: u64,
+    },
     ResultTooLarge {
         limit_bytes: usize,
     },
@@ -854,6 +890,18 @@ impl TinesError {
                 None,
                 Some(*diagnostic_id),
             ),
+            Self::ContentTooLarge {
+                status,
+                diagnostic_id,
+                ..
+            } => (
+                "schema",
+                "content_source_too_large".to_owned(),
+                "Tines content exceeded the 1 MiB source limit.".to_owned(),
+                Some(*status),
+                None,
+                Some(*diagnostic_id),
+            ),
             Self::ResultTooLarge { limit_bytes } => (
                 "schema",
                 "tool_result_too_large".to_owned(),
@@ -912,6 +960,7 @@ impl TinesError {
         let (source, code, message, status, retry_after, diagnostic_id) = self.fields();
         let details = match self {
             Self::Upstream { details, .. } => details.clone(),
+            Self::ContentTooLarge { limit_bytes, .. } => Some(json!({"limit_bytes": limit_bytes})),
             _ => None,
         };
         mcp_result(
