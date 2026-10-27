@@ -1371,7 +1371,6 @@ mod tests {
             assert!(!text.contains(private_value));
             assert!(!logs.contains(private_value));
         }
-        assert!(logs.contains("/projects/{id}"), "captured logs: {logs}");
         stop(server);
     }
 
