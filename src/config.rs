@@ -73,10 +73,10 @@ impl Config {
 
         let allowed_origins = get("MCP_ALLOWED_ORIGINS")
             .map(|value| parse_csv(&value))
-            .unwrap_or_default();
-        for origin in &allowed_origins {
-            validate_origin(origin, "MCP_ALLOWED_ORIGINS")?;
-        }
+            .unwrap_or_default()
+            .into_iter()
+            .map(|origin| normalize_allowed_origin(&origin))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let allow_http = get("TINES_ALLOW_HTTP")
             .as_deref()
@@ -239,6 +239,25 @@ fn validate_origin(value: &str, variable: &'static str) -> Result<Url, ConfigErr
     Ok(parsed)
 }
 
+fn normalize_allowed_origin(value: &str) -> Result<String, ConfigError> {
+    const VARIABLE: &str = "MCP_ALLOWED_ORIGINS";
+    const REASON: &str = "must be an exact HTTP or HTTPS origin";
+
+    let parsed = validate_origin(value, VARIABLE)?;
+    let host = parsed.host_str().ok_or(ConfigError {
+        variable: VARIABLE,
+        reason: REASON,
+    })?;
+    let port = parsed.port_or_known_default().ok_or(ConfigError {
+        variable: VARIABLE,
+        reason: REASON,
+    })?;
+
+    // Avoid Url serialization here: it omits explicit default ports, which the
+    // SDK interprets as an allowlist entry matching every port.
+    Ok(format!("{}://{host}:{port}", parsed.scheme()))
+}
+
 fn validate_tines_url(
     value: &str,
     allow_http: bool,
@@ -366,5 +385,23 @@ mod tests {
         assert!(config(&[("MCP_ALLOWED_ORIGINS", "https://client.example/path")]).is_err());
         assert!(config(&[("MCP_ALLOWED_ORIGINS", "https://client.example/path/..")]).is_err());
         assert!(config(&[("MCP_ALLOWED_HOSTS", "* ")]).is_err());
+    }
+
+    #[test]
+    fn normalizes_allowed_origins_to_explicit_effective_ports() {
+        let config = config(&[(
+            "MCP_ALLOWED_ORIGINS",
+            "https://client.example, http://localhost, https://[2001:db8::1]:8443",
+        )])
+        .expect("valid HTTP origins should be normalized");
+
+        assert_eq!(
+            config.allowed_origins,
+            [
+                "https://client.example:443",
+                "http://localhost:80",
+                "https://[2001:db8::1]:8443"
+            ]
+        );
     }
 }

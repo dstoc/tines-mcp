@@ -20,6 +20,36 @@ fn app() -> Router {
     server::router(&config, CancellationToken::new())
 }
 
+fn app_with_allowed_origins(origins: &str) -> Router {
+    let config =
+        Config::from_lookup(|name| (name == "MCP_ALLOWED_ORIGINS").then(|| origins.to_owned()))
+            .expect("configured origins should be valid");
+    server::router(&config, CancellationToken::new())
+}
+
+async fn discovery_status(app: Router, origin: Option<&str>) -> StatusCode {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("Host", "localhost")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "server/discover");
+    if let Some(origin) = origin {
+        request = request.header("Origin", origin);
+    }
+    let response = app
+        .oneshot(
+            request
+                .body(Body::from(DISCOVER_2026))
+                .expect("discovery request should build"),
+        )
+        .await
+        .expect("in-process HTTP request should succeed");
+    response.status()
+}
+
 async fn post_fixture(
     app: Router,
     version: &str,
@@ -175,4 +205,45 @@ async fn transport_rejects_unlisted_hosts_and_origins() {
         .await
         .expect("in-process HTTP request should succeed");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn configured_default_origin_matches_default_port_only() {
+    let app = app_with_allowed_origins("https://client.example");
+
+    for origin in ["https://client.example", "https://client.example:443"] {
+        assert_eq!(
+            discovery_status(app.clone(), Some(origin)).await,
+            StatusCode::OK,
+            "default-port equivalent origin {origin} should be allowed"
+        );
+    }
+    assert_eq!(
+        discovery_status(app.clone(), Some("https://client.example:8443")).await,
+        StatusCode::FORBIDDEN,
+        "a different port should be rejected"
+    );
+    assert_eq!(
+        discovery_status(app, None).await,
+        StatusCode::OK,
+        "requests without an Origin header should remain allowed"
+    );
+}
+
+#[tokio::test]
+async fn configured_custom_origin_port_remains_exact() {
+    let app = app_with_allowed_origins("https://client.example:8443");
+
+    assert_eq!(
+        discovery_status(app.clone(), Some("https://client.example:8443")).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        discovery_status(app.clone(), Some("https://client.example:9443")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        discovery_status(app, Some("https://client.example")).await,
+        StatusCode::FORBIDDEN
+    );
 }
