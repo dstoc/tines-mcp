@@ -145,6 +145,12 @@ impl ReadTools {
             )
             .with_annotations(annotations())
             .with_raw_output_schema(output_schema.clone()),
+            tool::<ListEventsArgs>(
+                "list_events",
+                "Read one live page of existing Tines activity events. Supports project, issue, event type, state, inclusive since, exclusive until, and native cursor filters. Keep filters unchanged when continuing; the cursor is not a durable replay checkpoint.",
+                output_schema.clone(),
+            )
+            .with_annotations(annotations()),
             Tool::new(
                 "list_context",
                 "List one native page of raw context items. Scope filters use Tines scope-includes semantics; exact=true requires only the selected scope dimensions. Use get_issue_context for assembled inherited guidance.",
@@ -812,6 +818,114 @@ impl ReadTools {
         .await
     }
 
+    async fn list_events(
+        &self,
+        args: ListEventsArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args
+            .project_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return validation("project_id", "must be a non-empty project ID");
+        }
+        if args
+            .issue_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return validation("issue_id", "must be a non-empty issue ID");
+        }
+        if args
+            .event_types
+            .iter()
+            .any(|event_type| event_type.trim().is_empty())
+        {
+            return validation("event_types", "must contain non-empty event type strings");
+        }
+        if args
+            .state
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return validation("state", "must be a non-empty workflow state ID");
+        }
+        if args.since.as_ref().is_some_and(TimeBound::is_empty)
+            || args.until.as_ref().is_some_and(TimeBound::is_empty)
+        {
+            return validation(
+                "time_bound",
+                "must be epoch milliseconds or a non-empty ISO 8601 timestamp",
+            );
+        }
+        if args
+            .limit
+            .is_some_and(|limit| !(1..=MAX_PAGE_SIZE).contains(&limit))
+        {
+            return validation("limit", "must be between 1 and 100");
+        }
+        if args
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.is_empty() || cursor.chars().count() > MAX_CURSOR_CHARS)
+        {
+            return validation(
+                "cursor",
+                "must be non-empty and no longer than 4096 characters",
+            );
+        }
+
+        self.execute(cancellation, move |call| async move {
+            let mut query = Query::new();
+            if let Some(project_id) = args.project_id.as_deref() {
+                reject_excluded(&call, project_id, "project")?;
+                query.append("project", project_id);
+            }
+            if let Some(issue_id) = args.issue_id.as_deref() {
+                if call.has_project_exclusions() {
+                    let project_id = resolve_issue_project_id(&call, issue_id).await?;
+                    reject_excluded(&call, &project_id, "issue")?;
+                }
+                query.append("issue", issue_id);
+            }
+            if !args.event_types.is_empty() {
+                query.append("type", args.event_types.join(","));
+            }
+            append_optional(&mut query, "state", args.state.as_deref());
+            if let Some(since) = args.since.as_ref() {
+                query.append("since", since.as_query_value());
+            }
+            if let Some(until) = args.until.as_ref() {
+                query.append("until", until.as_query_value());
+            }
+            if let Some(limit) = args.limit {
+                query.append("limit", limit);
+            }
+            append_optional(&mut query, "cursor", args.cursor.as_deref());
+
+            let (mut data, status) = call.get_json_with_status(Route::Events, &query).await?;
+            let items = collection_items_mut(&mut data, status, "events")?;
+            if call.has_project_exclusions() {
+                retain_visible_event_items(items, &call, status).await?;
+            }
+            let next_cursor = required_cursor(&data, status)?;
+            if args
+                .cursor
+                .as_deref()
+                .is_some_and(|cursor| next_cursor == Some(cursor))
+            {
+                return Err(TinesError::Schema {
+                    status: Some(status),
+                    code: "repeated_cursor",
+                    message: "Tines returned the same continuation cursor for this event page.",
+                });
+            }
+            Ok(ReadData::new(data))
+        })
+        .await
+    }
+
     async fn list_context(
         &self,
         args: ListContextArgs,
@@ -1304,6 +1418,7 @@ impl ServerHandler for ReadTools {
             }
             "get_workflow" => self.get_workflow(parse_args(&request)?, cancellation).await,
             "list_labels" => self.list_labels(parse_args(&request)?, cancellation).await,
+            "list_events" => self.list_events(parse_args(&request)?, cancellation).await,
             "list_context" => self.list_context(parse_args(&request)?, cancellation).await,
             "get_context" => self.get_context(parse_args(&request)?, cancellation).await,
             "get_issue_context" => {
@@ -1499,6 +1614,48 @@ struct ListWorkflowsArgs {
 struct GetWorkflowArgs {
     /// Immutable Tines workflow ID.
     workflow_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListEventsArgs {
+    /// Restrict to one project by immutable ID.
+    project_id: Option<String>,
+    /// Restrict to one issue by immutable ID.
+    issue_id: Option<String>,
+    /// Event type strings to include. This list is open-ended as Tines adds event types.
+    #[serde(default)]
+    event_types: Vec<String>,
+    /// Filter by workflow state ID referenced by an event payload.
+    state: Option<String>,
+    /// Inclusive lower time bound as epoch milliseconds or an ISO 8601 timestamp.
+    since: Option<TimeBound>,
+    /// Exclusive upper time bound as epoch milliseconds or an ISO 8601 timestamp.
+    until: Option<TimeBound>,
+    /// Native page size from 1 through 100. The Tines default is 50.
+    limit: Option<u32>,
+    /// Opaque native cursor from the previous page; retain all filters when continuing.
+    cursor: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum TimeBound {
+    EpochMilliseconds(u64),
+    Iso8601(String),
+}
+
+impl TimeBound {
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Iso8601(value) if value.trim().is_empty())
+    }
+
+    fn as_query_value(&self) -> String {
+        match self {
+            Self::EpochMilliseconds(value) => value.to_string(),
+            Self::Iso8601(value) => value.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1821,6 +1978,7 @@ fn collection_items_mut<'a>(
                 status,
                 "Tines workflow response was missing an items array.",
             ),
+            "events" => schema_error(status, "Tines event response was missing an items array."),
             "context" => schema_error(status, "Tines context response was missing an items array."),
             "runs" => schema_error(status, "Tines run response was missing an items array."),
             _ => schema_error(status, "Tines label response was missing an items array."),
@@ -1842,6 +2000,72 @@ fn normalize_unpaginated_cursor(data: &mut Value, status: u16) -> Result<(), Tin
         Some(_) => Err(schema_error(
             status,
             "Tines returned a cursor for an endpoint that is not paginated.",
+        )),
+    }
+}
+
+async fn retain_visible_event_items(
+    items: &mut Vec<Value>,
+    call: &TinesToolCall,
+    status: u16,
+) -> Result<(), TinesError> {
+    let mut visible = Vec::with_capacity(items.len());
+    for item in items.drain(..) {
+        let recorded_project = optional_attribution_id(&item, "project_id", status)?;
+        let issue_id = optional_attribution_id(&item, "issue_id", status)?;
+        if recorded_project.is_some_and(|id| call.is_project_excluded(id)) {
+            continue;
+        }
+
+        let current_project = if let Some(issue_id) = issue_id {
+            match event_issue_project_id(&item, status)? {
+                Some(project_id) => Some(project_id.to_owned()),
+                None => Some(resolve_issue_project_id(call, issue_id).await?),
+            }
+        } else {
+            None
+        };
+        if current_project
+            .as_deref()
+            .is_some_and(|id| call.is_project_excluded(id))
+        {
+            continue;
+        }
+        visible.push(item);
+    }
+    *items = visible;
+    Ok(())
+}
+
+fn optional_attribution_id<'a>(
+    event: &'a Value,
+    field: &'static str,
+    status: u16,
+) -> Result<Option<&'a str>, TinesError> {
+    match event.get(field) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value)),
+        _ => Err(schema_error(
+            status,
+            "Tines event response was missing valid project and issue attribution fields.",
+        )),
+    }
+}
+
+fn event_issue_project_id(event: &Value, status: u16) -> Result<Option<&str>, TinesError> {
+    match event.get("issue_ref") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(issue_ref)) => match issue_ref.get("project_id") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(project_id)) if !project_id.is_empty() => Ok(Some(project_id)),
+            _ => Err(schema_error(
+                status,
+                "Tines event issue reference had an invalid current project ID.",
+            )),
+        },
+        _ => Err(schema_error(
+            status,
+            "Tines event issue reference was neither an object nor null.",
         )),
     }
 }
