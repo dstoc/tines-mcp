@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, fs, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{error::Error, fmt, fs, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 use url::{Host, Url};
 
@@ -14,10 +14,48 @@ pub struct Config {
 
 #[derive(Clone, Debug)]
 pub struct TinesConfig {
-    pub base_url: Url,
-    pub web_url: Url,
-    pub excluded_project_ids: Vec<String>,
-    pub token_source: TokenSource,
+    pub(crate) base_url: Url,
+    pub(crate) web_url: Url,
+    pub(crate) excluded_project_ids: Vec<String>,
+    pub(crate) token_source: TokenSource,
+    pub(crate) api_token: Secret,
+}
+
+#[derive(Clone)]
+pub(crate) struct Secret(Arc<str>);
+
+impl Secret {
+    fn new(value: String) -> Self {
+        Self(Arc::from(value))
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("[REDACTED]")
+    }
+}
+
+impl TinesConfig {
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
+    pub fn web_url(&self) -> &Url {
+        &self.web_url
+    }
+
+    pub fn excluded_project_ids(&self) -> &[String] {
+        &self.excluded_project_ids
+    }
+
+    pub fn token_source(&self) -> &TokenSource {
+        &self.token_source
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,21 +153,19 @@ impl Config {
                 variable: "TINES_BASE_URL",
                 reason: "is required when Tines settings are provided",
             })?;
-            let token_source = match (token_env, token_file) {
-                (Some(_), None) => TokenSource::Environment,
+            let (token_source, api_token) = match (token_env, token_file) {
+                (Some(value), None) => {
+                    let value = validate_token(value, "TINES_API_TOKEN")?;
+                    (TokenSource::Environment, Secret::new(value))
+                }
                 (None, Some(path)) => {
                     let path = PathBuf::from(path);
-                    let contents = fs::read(&path).map_err(|_| ConfigError {
+                    let contents = fs::read_to_string(&path).map_err(|_| ConfigError {
                         variable: "TINES_API_TOKEN_FILE",
                         reason: "must name a readable, non-empty token file",
                     })?;
-                    if contents.iter().all(u8::is_ascii_whitespace) {
-                        return Err(ConfigError {
-                            variable: "TINES_API_TOKEN_FILE",
-                            reason: "must name a readable, non-empty token file",
-                        });
-                    }
-                    TokenSource::File(path)
+                    let value = validate_token(contents, "TINES_API_TOKEN_FILE")?;
+                    (TokenSource::File(path), Secret::new(value))
                 }
                 (Some(_), Some(_)) => {
                     return Err(ConfigError {
@@ -156,6 +192,7 @@ impl Config {
                 web_url,
                 excluded_project_ids,
                 token_source,
+                api_token,
             })
         } else {
             None
@@ -168,6 +205,17 @@ impl Config {
             tines,
         })
     }
+}
+
+fn validate_token(value: String, variable: &'static str) -> Result<String, ConfigError> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+        return Err(ConfigError {
+            variable,
+            reason: "must contain a non-empty bearer token without whitespace or control characters",
+        });
+    }
+    Ok(value.to_owned())
 }
 
 fn parse_csv(value: &str) -> Vec<String> {
@@ -358,6 +406,18 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_empty_or_header_injection_tokens_without_echoing_values() {
+        for token in [" \n", "bad token", "bad\ntoken"] {
+            let result = config(&[
+                ("TINES_BASE_URL", "https://tines.example"),
+                ("TINES_API_TOKEN", token),
+            ]);
+            let error = result.expect_err("invalid bearer token should fail local validation");
+            assert!(!error.to_string().contains(token));
+        }
     }
 
     #[test]
