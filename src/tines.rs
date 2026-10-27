@@ -3,6 +3,7 @@ use std::{
     error::Error,
     fmt,
     future::Future,
+    io::{self, Write},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -88,32 +89,33 @@ impl Route<'_> {
         }
     }
 
-    fn push_segments(self, segments: &mut url::PathSegmentsMut<'_>) {
+    fn push_segments(self, segments: &mut url::PathSegmentsMut<'_>) -> Result<(), TinesError> {
         match self {
             Self::Projects => {
                 segments.push("projects");
             }
             Self::Project { project_id } => {
-                segments.push("projects").push(project_id);
+                segments.push("projects");
+                push_dynamic_segment(segments, project_id)?;
             }
             Self::Issues => {
                 segments.push("issues");
             }
             Self::Issue { issue_id } => {
-                segments.push("issues").push(issue_id);
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
             }
             Self::ProjectIssue { project_id, number } => {
-                segments
-                    .push("projects")
-                    .push(project_id)
-                    .push("issues")
-                    .push(&number.to_string());
+                segments.push("projects");
+                push_dynamic_segment(segments, project_id)?;
+                segments.push("issues").push(&number.to_string());
             }
             Self::Workflows => {
                 segments.push("workflows");
             }
             Self::Workflow { workflow_id } => {
-                segments.push("workflows").push(workflow_id);
+                segments.push("workflows");
+                push_dynamic_segment(segments, workflow_id)?;
             }
             Self::Labels => {
                 segments.push("labels");
@@ -122,49 +124,71 @@ impl Route<'_> {
                 segments.push("context");
             }
             Self::ContextItem { context_id } => {
-                segments.push("context").push(context_id);
+                segments.push("context");
+                push_dynamic_segment(segments, context_id)?;
             }
             Self::IssueContext { issue_id } => {
-                segments.push("issues").push(issue_id).push("context");
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("context");
             }
             Self::IssueJournal { issue_id } => {
-                segments.push("issues").push(issue_id).push("journal");
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("journal");
             }
             Self::IssueArtifacts { issue_id } => {
-                segments.push("issues").push(issue_id).push("artifacts");
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("artifacts");
             }
             Self::IssueArtifact { issue_id, name } => {
-                segments
-                    .push("issues")
-                    .push(issue_id)
-                    .push("artifacts")
-                    .push(name);
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("artifacts");
+                push_dynamic_segment(segments, name)?;
             }
             Self::ArtifactContent { issue_id, name } => {
-                segments
-                    .push("issues")
-                    .push(issue_id)
-                    .push("artifacts")
-                    .push(name)
-                    .push("content");
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("artifacts");
+                push_dynamic_segment(segments, name)?;
+                segments.push("content");
             }
             Self::Runs => {
                 segments.push("runs");
             }
             Self::Run { run_id } => {
-                segments.push("runs").push(run_id);
+                segments.push("runs");
+                push_dynamic_segment(segments, run_id)?;
             }
             Self::RunLog { run_id } => {
-                segments.push("runs").push(run_id).push("log");
+                segments.push("runs");
+                push_dynamic_segment(segments, run_id)?;
+                segments.push("log");
             }
             Self::IssueDispatch { issue_id } => {
-                segments.push("issues").push(issue_id).push("dispatch");
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("dispatch");
             }
             Self::Events => {
                 segments.push("events");
             }
         }
+        Ok(())
     }
+}
+
+fn push_dynamic_segment(
+    segments: &mut url::PathSegmentsMut<'_>,
+    value: &str,
+) -> Result<(), TinesError> {
+    if value.is_empty() || value == "." || value == ".." {
+        return Err(TinesError::InvalidRoute);
+    }
+    segments.push(value);
+    Ok(())
 }
 
 /// Encoded query pairs for an explicitly selected route.
@@ -385,12 +409,16 @@ impl TinesToolCall {
                     .await
                     .map_err(|error| match error {
                         BodyReadError::TooLarge => TinesError::BodyTooLarge {
+                            status: status.as_u16(),
                             limit_bytes: MAX_JSON_BODY_BYTES,
                             diagnostic_id,
                         },
                         BodyReadError::Transport => TinesError::Transport { diagnostic_id },
                     })?;
-                serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson { diagnostic_id })
+                serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
+                    status: status.as_u16(),
+                    diagnostic_id,
+                })
             } else {
                 let body = read_bounded_body(response, MAX_ERROR_BODY_BYTES).await;
                 Err(decode_upstream_error(
@@ -435,7 +463,7 @@ fn build_url(base_url: &Url, route: Route<'_>, query: &Query) -> Result<Url, Tin
             .path_segments_mut()
             .map_err(|_| TinesError::InvalidRoute)?;
         segments.pop_if_empty().push("api").push("v1");
-        route.push_segments(&mut segments);
+        route.push_segments(&mut segments)?;
     }
     if !query.pairs.is_empty() {
         url.query_pairs_mut()
@@ -643,10 +671,12 @@ pub enum TinesError {
         diagnostic_id: u64,
     },
     InvalidJson {
+        status: u16,
         diagnostic_id: u64,
     },
     InvalidRoute,
     BodyTooLarge {
+        status: u16,
         limit_bytes: usize,
         diagnostic_id: u64,
     },
@@ -726,11 +756,14 @@ impl TinesError {
                 None,
                 Some(*diagnostic_id),
             ),
-            Self::InvalidJson { diagnostic_id } => (
+            Self::InvalidJson {
+                status,
+                diagnostic_id,
+            } => (
                 "schema",
                 "invalid_upstream_json".to_owned(),
                 "Tines returned a response that was not valid JSON.".to_owned(),
-                None,
+                Some(*status),
                 None,
                 Some(*diagnostic_id),
             ),
@@ -743,13 +776,14 @@ impl TinesError {
                 None,
             ),
             Self::BodyTooLarge {
+                status,
                 limit_bytes,
                 diagnostic_id,
             } => (
                 "schema",
                 "upstream_body_too_large".to_owned(),
                 format!("Tines response exceeded the {limit_bytes}-byte body limit."),
-                None,
+                Some(*status),
                 None,
                 Some(*diagnostic_id),
             ),
@@ -869,18 +903,40 @@ impl ResultEnvelope {
                 "omissions": self.omissions,
             }
         });
-        let text = serde_json::to_string(&value).expect("JSON values always serialize");
-        if text.len().saturating_mul(2) > MAX_TOOL_RESULT_BYTES {
+        let result = mcp_result(value, false);
+        let serialized_size = serialized_size(&result);
+        if serialized_size > MAX_TOOL_RESULT_BYTES {
             return TinesError::ResultTooLarge {
                 limit_bytes: MAX_TOOL_RESULT_BYTES,
             }
             .to_mcp_result();
         }
-        mcp_result(value, false)
+        result
     }
 }
 
 const MAX_TOOL_RESULT_BYTES: usize = 512 * 1024;
+
+struct CountingWriter {
+    bytes_written: usize,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes_written = self.bytes_written.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_size(value: &rmcp::model::CallToolResult) -> usize {
+    let mut writer = CountingWriter { bytes_written: 0 };
+    serde_json::to_writer(&mut writer, value).expect("MCP tool results always serialize");
+    writer.bytes_written
+}
 
 fn mcp_result(value: Value, is_error: bool) -> rmcp::model::CallToolResult {
     use rmcp::model::{CallToolResult, ContentBlock};
@@ -942,8 +998,8 @@ mod tests {
     use crate::config::Config;
 
     use super::{
-        MAX_ERROR_BODY_BYTES, MAX_JSON_BODY_BYTES, Query, ResultEnvelope, Route, TinesClient,
-        TinesError, read_bounded_body,
+        MAX_ERROR_BODY_BYTES, MAX_JSON_BODY_BYTES, MAX_TOOL_RESULT_BYTES, Query, ResultEnvelope,
+        Route, TinesClient, TinesError, read_bounded_body,
     };
 
     #[derive(Clone)]
@@ -1259,6 +1315,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dot_and_empty_dynamic_path_segments_are_rejected_before_request() {
+        let mut server = start_mock(MockReply::json(StatusCode::OK, "{}")).await;
+        let client = make_client(&server.base_url);
+        let invalid_routes = [
+            Route::Project { project_id: ".." },
+            Route::Issue { issue_id: "." },
+            Route::Issue { issue_id: "" },
+            Route::ProjectIssue {
+                project_id: "..",
+                number: 1,
+            },
+            Route::Workflow { workflow_id: ".." },
+            Route::ContextItem { context_id: ".." },
+            Route::IssueContext { issue_id: ".." },
+            Route::IssueJournal { issue_id: ".." },
+            Route::IssueArtifacts { issue_id: ".." },
+            Route::IssueArtifact {
+                issue_id: "iss_1",
+                name: "..",
+            },
+            Route::IssueArtifact {
+                issue_id: "..",
+                name: "report",
+            },
+            Route::ArtifactContent {
+                issue_id: "..",
+                name: "report",
+            },
+            Route::ArtifactContent {
+                issue_id: "iss_1",
+                name: "..",
+            },
+            Route::Run { run_id: ".." },
+            Route::RunLog { run_id: ".." },
+            Route::IssueDispatch { issue_id: ".." },
+        ];
+
+        for route in invalid_routes {
+            assert!(matches!(
+                call(&client, route, &empty_query()).await,
+                Err(TinesError::InvalidRoute)
+            ));
+        }
+        assert_eq!(server.count.load(Ordering::SeqCst), 0);
+        assert!(server.observations.try_recv().is_err());
+        stop(server);
+    }
+
+    #[tokio::test]
     async fn initialization_validation_builds_the_client_without_an_upstream_request() {
         let mut server = start_mock(MockReply::json(StatusCode::OK, "{}")).await;
         let _client = make_client(&server.base_url);
@@ -1404,8 +1509,11 @@ mod tests {
         let error = call(&client, Route::Projects, &empty_query())
             .await
             .expect_err("non-JSON success body should fail schema validation");
-        assert!(matches!(error, TinesError::InvalidJson { .. }));
-        let text = error.to_mcp_result().content[0]
+        assert!(matches!(error, TinesError::InvalidJson { status: 200, .. }));
+        let result = error.to_mcp_result();
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["error"]["status"], 200);
+        let text = result.content[0]
             .as_text()
             .expect("schema error should include JSON text")
             .text
@@ -1433,6 +1541,34 @@ mod tests {
         assert!(text.contains("8192-byte limit"));
         assert!(text.contains("502"));
         assert!(!text.contains(&raw_body));
+        stop(server);
+    }
+
+    #[tokio::test]
+    async fn oversized_success_body_schema_error_keeps_received_status() {
+        let raw_body = "x".repeat(MAX_JSON_BODY_BYTES + 1);
+        let mut reply = MockReply::json(StatusCode::OK, &raw_body);
+        reply.content_length = Some(raw_body.len());
+        let server = start_mock(reply).await;
+        let client = make_client(&server.base_url);
+        let error = call(&client, Route::Projects, &empty_query())
+            .await
+            .expect_err("oversized success body should be a schema error");
+        assert!(matches!(
+            error,
+            TinesError::BodyTooLarge { status: 200, .. }
+        ));
+        let result = error.to_mcp_result();
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["error"]["status"], 200);
+        assert_eq!(structured["error"]["code"], "upstream_body_too_large");
+        assert!(
+            !result.content[0]
+                .as_text()
+                .expect("schema error should include text")
+                .text
+                .contains(&raw_body)
+        );
         stop(server);
     }
 
@@ -1707,12 +1843,29 @@ mod tests {
     }
 
     #[test]
-    fn oversized_serialized_results_fail_instead_of_being_truncated() {
-        let data = json!({"text": "x".repeat(270 * 1024)});
+    fn near_limit_results_fit_when_the_complete_serialized_result_is_bounded() {
+        let data = json!({"text": "x".repeat(255 * 1024)});
+        let result = ResultEnvelope::new(data).to_mcp_result();
+        assert_eq!(result.is_error, Some(false));
+        let serialized_size = serde_json::to_vec(&result)
+            .expect("MCP result should serialize")
+            .len();
+        assert_eq!(super::serialized_size(&result), serialized_size);
+        assert!(serialized_size > MAX_TOOL_RESULT_BYTES - (4 * 1024));
+        assert!(serialized_size <= MAX_TOOL_RESULT_BYTES);
+    }
+
+    #[test]
+    fn escaping_heavy_results_over_the_complete_wire_limit_fail() {
+        let data = json!({"text": "\"\\".repeat(100 * 1024)});
         let result = ResultEnvelope::new(data).to_mcp_result();
         assert_eq!(result.is_error, Some(true));
-        let value = result.structured_content.unwrap();
+        let value = result.structured_content.as_ref().unwrap();
         assert_eq!(value["error"]["code"], "tool_result_too_large");
         assert!(value["data"].is_null());
+        let serialized_size = serde_json::to_vec(&result)
+            .expect("bounded error result should serialize")
+            .len();
+        assert!(serialized_size <= MAX_TOOL_RESULT_BYTES);
     }
 }
