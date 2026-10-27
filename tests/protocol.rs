@@ -1,19 +1,27 @@
-use std::future::Future;
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode, header},
+    response::Response,
     routing::get,
 };
 use http_body_util::BodyExt;
 use rmcp::{
-    ServerHandler,
+    ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
-        ServerCapabilities, ServerConfig,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
+        Implementation, ProtocolVersion, ServerCapabilities, ServerConfig,
     },
     service::{RequestContext, RoleServer},
+    transport::StreamableHttpClientTransport,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     },
@@ -355,6 +363,156 @@ async fn successful_tool_call_is_returned_through_the_http_protocol() {
         body["result"]["structuredContent"]["data"]["items"],
         json!([{"id": "project-1", "name": "Protocol fixture"}])
     );
+    upstream_task.abort();
+}
+
+#[tokio::test]
+async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock Tines listener should bind");
+    let upstream_address = upstream_listener
+        .local_addr()
+        .expect("mock Tines listener should have an address");
+    let upstream_requests = Arc::new(AtomicUsize::new(0));
+    let handler_requests = Arc::clone(&upstream_requests);
+    let upstream_app = Router::new().route(
+        "/api/v1/projects",
+        get(move || {
+            let requests = Arc::clone(&handler_requests);
+            async move {
+                let request_index = requests.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = if request_index == 0 {
+                    (
+                        StatusCode::OK,
+                        json!({
+                            "items": [{"id": "project-sdk", "name": "SDK fixture"}],
+                            "next_cursor": null
+                        }),
+                    )
+                } else {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({
+                            "error": {
+                                "code": "fixture_unavailable",
+                                "message": "controlled upstream fixture failure"
+                            }
+                        }),
+                    )
+                };
+                Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("mock upstream response should build")
+            }
+        }),
+    );
+    let upstream_task = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("mock upstream should remain available");
+    });
+
+    let values = [
+        ("TINES_BASE_URL", format!("http://{upstream_address}")),
+        ("TINES_API_TOKEN", "local-test-token".to_owned()),
+        ("TINES_ALLOW_HTTP", "true".to_owned()),
+    ];
+    let config = Config::from_lookup(|name| {
+        values
+            .iter()
+            .find_map(|(key, value)| (*key == name).then(|| value.clone()))
+    })
+    .expect("mock Tines config should validate");
+    let tines =
+        TinesClient::new(config.tines.as_ref().unwrap()).expect("test Tines client should build");
+
+    let mcp_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("MCP listener should bind");
+    let mcp_address = mcp_listener
+        .local_addr()
+        .expect("MCP listener should have an address");
+    let cancellation = CancellationToken::new();
+    let app = server::router_with_client(&config, Some(tines), cancellation.clone());
+    let server_cancellation = cancellation.clone();
+    let server_task = tokio::spawn(async move {
+        axum::serve(mcp_listener, app)
+            .with_graceful_shutdown(server_cancellation.cancelled_owned())
+            .await
+            .expect("MCP server should stop cleanly");
+    });
+
+    let transport = StreamableHttpClientTransport::from_uri(format!("http://{mcp_address}/mcp"));
+    let client_config = ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("tines-mcp-sdk-test", "0.1.0"),
+    );
+    let client = client_config
+        .serve(transport)
+        .await
+        .expect("pinned SDK client should connect and negotiate");
+
+    let server_info = client
+        .peer()
+        .peer_info()
+        .expect("negotiation should expose server information");
+    assert_eq!(server_info.protocol_version, ProtocolVersion::LATEST);
+
+    let tools = client
+        .list_all_tools()
+        .await
+        .expect("SDK client should discover tools");
+    assert_eq!(tools.len(), 19);
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "list_projects")
+    );
+    assert!(tools.iter().all(|tool| {
+        tool.annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint)
+            == Some(true)
+    }));
+
+    let success = client
+        .call_tool(CallToolRequestParams::new("list_projects").with_arguments(Default::default()))
+        .await
+        .expect("SDK client should receive a successful tool result");
+    assert_eq!(success.is_error, Some(false));
+    assert_eq!(
+        success.structured_content.as_ref().unwrap()["data"]["items"],
+        json!([{"id": "project-sdk", "name": "SDK fixture"}])
+    );
+
+    let failure = client
+        .call_tool(CallToolRequestParams::new("list_projects").with_arguments(Default::default()))
+        .await
+        .expect("upstream failure should be returned as a tool result");
+    assert_eq!(failure.is_error, Some(true));
+    assert_eq!(
+        failure.structured_content.as_ref().unwrap()["error"]["source"],
+        "upstream"
+    );
+    assert_eq!(
+        failure.structured_content.as_ref().unwrap()["error"]["code"],
+        "fixture_unavailable"
+    );
+    assert_eq!(
+        failure.structured_content.as_ref().unwrap()["error"]["status"],
+        503
+    );
+    assert_eq!(upstream_requests.load(Ordering::SeqCst), 2);
+
+    client
+        .cancel()
+        .await
+        .expect("SDK client should shut down cleanly");
+    cancellation.cancel();
+    server_task.await.expect("MCP server task should complete");
     upstream_task.abort();
 }
 
