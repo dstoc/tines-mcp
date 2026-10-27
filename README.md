@@ -1,16 +1,17 @@
 # tines-mcp
 
-**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, context, and issue artifacts. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
+**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, and issue artifacts. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
 
 ## Available tools
 
-The service provides fourteen read-only tools:
+The service provides fifteen read-only tools:
 
 - **list_projects** and **get_project**
 - **list_issues** and **get_issue**
 - **list_issue_artifacts**, **get_issue_artifact**, and **read_artifact_content**
 - **list_workflows** and **get_workflow**
 - **list_labels**
+- **list_events** for on-demand activity reads
 - **list_context** and **get_context** for raw context items
 - **get_issue_context** for effective context, including inherited parts
 - **get_issue_journal** for the applicable guidance journal and its anchor
@@ -23,7 +24,9 @@ Issue filters include project ID, workflow, state, category, schedule, labels, s
 
 Artifact metadata and content use separate tools. **list_issue_artifacts** lists artifact metadata without fetching bytes. **get_issue_artifact** returns one artifact and its version history. **read_artifact_content** reads a selected version and, for folders, a selected file path. If you omit the version on the first read, the response includes the resolved version and artifact ID. Continue with those values, the same folder path, the returned SHA-256, and **next_offset**. Each call fetches and checks the bounded source again. The source limit is 1 MiB. Chunks default to 32 KiB; set **chunk_bytes** from 4 through 32768 for smaller chunks. Text chunks stay on UTF-8 boundaries. Binary chunks use base64. Link and PR artifacts remain references; the service does not follow their URLs or render artifact content.
 
-**list_context** supports project, state, label, issue, kind, search, exact-scope, archive, and pagination filters. It returns raw items. **get_issue_context** returns Tines' assembled effective context; **get_issue_journal** resolves guidance for the issue and does not return chronological activity.
+**list_context** supports project, state, label, issue, kind, search, exact-scope, archive, and pagination filters. It returns raw items. **get_issue_context** returns Tines' assembled effective context; **get_issue_journal** resolves guidance for the issue and its anchor. The journal is guidance, not chronological activity.
+
+**list_events** reads one page of existing activity on demand. It accepts project and issue IDs, an open list of event type strings, a workflow state ID, an inclusive **since** bound, an exclusive **until** bound, and the native cursor. Bounds can be epoch milliseconds or ISO 8601 timestamps. Keep the filters unchanged when continuing. Activity traversal is live rather than transactional, and its cursor is not a durable replay checkpoint. An empty page can still have a cursor when excluded projects accounted for every event on that page.
 
 The service can start without Tines settings so clients can discover its tools. Calls that need Tines data require a server-side API token and **TINES_BASE_URL**.
 

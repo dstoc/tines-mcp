@@ -26,6 +26,7 @@ struct MockState {
     body: Arc<Mutex<Value>>,
     responses: Arc<Mutex<HashMap<String, Value>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    path_responses: Arc<Mutex<HashMap<String, (StatusCode, Value)>>>,
     replies: Arc<Mutex<HashMap<String, VecDeque<MockReply>>>>,
 }
 
@@ -66,6 +67,13 @@ impl MockState {
         self.responses.lock().unwrap().insert(path.to_owned(), body);
     }
 
+    fn set_path_response(&self, path: &str, status: StatusCode, body: Value) {
+        self.path_responses
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), (status, body));
+    }
+
     fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
@@ -88,21 +96,17 @@ async fn mock_handler(State(state): State<MockState>, request: Request<Body>) ->
     let uri = request.uri().to_string();
     let path = uri.split('?').next().unwrap_or_default().to_owned();
     state.requests.lock().unwrap().push(uri);
-    let reply = state
+    let queued_reply = state
         .replies
         .lock()
         .unwrap()
         .get_mut(&path)
-        .and_then(VecDeque::pop_front)
-        .or_else(|| {
-            state
-                .responses
-                .lock()
-                .unwrap()
-                .get(&path)
-                .cloned()
-                .map(MockReply::json)
-        })
+        .and_then(VecDeque::pop_front);
+    let path_response = state.path_responses.lock().unwrap().get(&path).cloned();
+    let response_body = state.responses.lock().unwrap().get(&path).cloned();
+    let reply = queued_reply
+        .or_else(|| path_response.map(|(status, body)| MockReply::json_with_status(status, body)))
+        .or_else(|| response_body.map(MockReply::json))
         .unwrap_or_else(|| MockReply::json(state.body.lock().unwrap().clone()));
     Response::builder()
         .status(reply.status)
@@ -122,6 +126,7 @@ async fn start_mock(body: Value) -> MockUpstream {
         body: Arc::new(Mutex::new(body)),
         responses: Arc::new(Mutex::new(HashMap::new())),
         requests: Arc::new(Mutex::new(Vec::new())),
+        path_responses: Arc::new(Mutex::new(HashMap::new())),
         replies: Arc::new(Mutex::new(HashMap::new())),
     };
     let task_state = state.clone();
@@ -332,6 +337,7 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             "list_workflows",
             "get_workflow",
             "list_labels",
+            "list_events",
             "list_context",
             "get_context",
             "get_issue_context",
@@ -407,6 +413,22 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             .find(|tool| tool["name"] == "get_context")
             .unwrap()["inputSchema"]["required"],
         json!(["context_id"])
+    );
+    let list_events = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_events")
+        .unwrap();
+    assert_eq!(
+        list_events["inputSchema"]["properties"]["event_types"]["type"],
+        "array"
+    );
+    assert_eq!(
+        list_events["inputSchema"]["properties"]["event_types"]["items"]["type"],
+        "string"
+    );
+    assert_eq!(
+        list_events["inputSchema"]["properties"]["state"]["description"],
+        "Filter by workflow state ID referenced by an event payload."
     );
 }
 
@@ -1288,6 +1310,169 @@ async fn single_project_and_workflow_reads_map_ids_without_extra_requests() {
         upstream.state.requests().last().unwrap(),
         "/api/v1/workflows/workflow-a"
     );
+    assert_eq!(upstream.state.requests().len(), 2);
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn event_list_maps_filters_time_bounds_and_open_type_strings() {
+    let upstream = start_mock(json!({"items": [], "next_cursor": "next+/=opaque"})).await;
+    let app = configured_app(&upstream, &[]);
+    let result = call_tool(
+        app,
+        "list_events",
+        json!({
+            "project_id": "project-a",
+            "issue_id": "issue-a",
+            "event_types": ["issue.transitioned", "future.event_type"],
+            "state": "state-a",
+            "since": 1793000000123u64,
+            "until": "2026-10-28T12:30:00Z",
+            "limit": 25,
+            "cursor": "before+/=opaque"
+        }),
+    )
+    .await;
+    assert_eq!(result["data"]["items"], json!([]));
+    assert_eq!(result["data"]["next_cursor"], "next+/=opaque");
+    assert_eq!(
+        decoded_query(&upstream.state.requests()[0]),
+        [
+            ("project", "project-a"),
+            ("issue", "issue-a"),
+            ("type", "issue.transitioned,future.event_type"),
+            ("state", "state-a"),
+            ("since", "1793000000123"),
+            ("until", "2026-10-28T12:30:00Z"),
+            ("limit", "25"),
+            ("cursor", "before+/=opaque")
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn event_list_rejects_an_empty_workflow_state_id() {
+    let upstream = start_mock(json!({})).await;
+    let app = configured_app(&upstream, &[]);
+
+    let result = call_tool(app, "list_events", json!({"state": "  "})).await;
+
+    assert_eq!(result["error"]["source"], "validation");
+    assert_eq!(
+        result["error"]["message"],
+        "state: must be a non-empty workflow state ID"
+    );
+    assert!(upstream.state.requests().is_empty());
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn event_project_exclusions_check_recorded_and_current_issue_attribution() {
+    let upstream = start_mock(json!({
+        "items": [
+            {"id": "historical-hidden", "project_id": "project-hidden", "issue_id": null},
+            {
+                "id": "current-hidden-from-reference",
+                "project_id": "project-visible",
+                "issue_id": "issue-ref-hidden",
+                "issue_ref": {"project_id": "project-hidden"}
+            },
+            {
+                "id": "current-hidden-from-lookup",
+                "project_id": "project-visible",
+                "issue_id": "issue-lookup-hidden",
+                "issue_ref": null
+            },
+            {"id": "workspace", "project_id": null, "issue_id": null, "project_name": null},
+            {"id": "visible", "project_id": "project-visible", "issue_id": null}
+        ],
+        "next_cursor": null
+    }))
+    .await;
+    upstream.state.set_path_response(
+        "/api/v1/issues/issue-lookup-hidden",
+        StatusCode::OK,
+        json!({"id": "issue-lookup-hidden", "project_id": "project-hidden"}),
+    );
+    let app = configured_app(&upstream, &["project-hidden"]);
+
+    let result = call_tool(app, "list_events", json!({})).await;
+    assert_eq!(
+        result["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["workspace", "visible"]
+    );
+    assert_eq!(
+        upstream.state.requests(),
+        ["/api/v1/events", "/api/v1/issues/issue-lookup-hidden"]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn event_excluded_only_page_keeps_its_cursor_for_the_next_native_page() {
+    let upstream = start_mock(json!({
+        "items": [{"id": "hidden", "project_id": "project-hidden", "issue_id": null}],
+        "next_cursor": "continue+/=opaque"
+    }))
+    .await;
+    let app = configured_app(&upstream, &["project-hidden"]);
+
+    let first = call_tool(app.clone(), "list_events", json!({"limit": 1})).await;
+    assert_eq!(first["data"]["items"], json!([]));
+    assert_eq!(first["data"]["next_cursor"], "continue+/=opaque");
+
+    upstream.state.set_body(json!({
+        "items": [{"id": "visible", "project_id": "project-visible", "issue_id": null}],
+        "next_cursor": null
+    }));
+    let second = call_tool(
+        app,
+        "list_events",
+        json!({"limit": 1, "cursor": "continue+/=opaque"}),
+    )
+    .await;
+    assert_eq!(second["data"]["items"][0]["id"], "visible");
+    assert_eq!(second["data"]["next_cursor"], Value::Null);
+    assert_eq!(
+        decoded_query(&upstream.state.requests()[1]),
+        [
+            ("limit".to_owned(), "1".to_owned()),
+            ("cursor".to_owned(), "continue+/=opaque".to_owned())
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn event_attribution_lookup_failure_fails_the_whole_page() {
+    let upstream = start_mock(json!({
+        "items": [{
+            "id": "cannot-attribute",
+            "project_id": "project-visible",
+            "issue_id": "issue-unavailable",
+            "issue_ref": null
+        }],
+        "next_cursor": "opaque-next"
+    }))
+    .await;
+    upstream.state.set_path_response(
+        "/api/v1/issues/issue-unavailable",
+        StatusCode::INTERNAL_SERVER_ERROR,
+        json!({"error": {"code": "internal_error", "message": "lookup failed"}}),
+    );
+    let app = configured_app(&upstream, &["project-hidden"]);
+
+    let result = call_tool(app, "list_events", json!({})).await;
+    assert_eq!(result["error"]["source"], "upstream");
+    assert_eq!(result["error"]["status"], 500);
+    assert!(result["data"].is_null());
     assert_eq!(upstream.state.requests().len(), 2);
     upstream.task.abort();
 }
