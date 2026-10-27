@@ -1,0 +1,29 @@
+[package]
+name = "tines-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Read-only Tines MCP adapter"
+license = "MIT"
+
+[lib]
+name = "tines_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tines-mcp"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
+
+[dev-dependencies]
+http-body-util = "0.1"
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
