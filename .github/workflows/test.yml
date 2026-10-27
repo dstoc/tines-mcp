@@ -20,3 +20,20 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Build container image
+        run: docker build --file Containerfile --tag tines-mcp:ci .
+      - name: Verify container identity and shutdown
+        run: |
+          test "$(docker image inspect tines-mcp:ci --format '{{.Config.User}}')" = "10001:10001"
+          docker run --detach --name tines-mcp-ci --publish 127.0.0.1:18080:8080 --env MCP_BIND_ADDR=0.0.0.0:8080 tines-mcp:ci
+          trap 'docker rm --force tines-mcp-ci >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz || true)"
+            if [ "$status" = "204" ]; then
+              break
+            fi
+            sleep 1
+          done
+          test "$status" = "204"
+          docker stop --time 60 tines-mcp-ci
+          test "$(docker inspect --format '{{.State.ExitCode}}' tines-mcp-ci)" = "0"
