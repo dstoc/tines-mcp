@@ -189,7 +189,26 @@ async fn legacy_initialization_and_tool_discovery_are_stateless() {
         .expect("in-process HTTP request should succeed");
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response.headers().get("Mcp-Session-Id").is_none());
-    assert_eq!(response_json(response).await["result"]["tools"], json!([]));
+    let body = response_json(response).await;
+    let tools = body["result"]["tools"]
+        .as_array()
+        .expect("read tools should be listed");
+    let names = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "list_projects",
+            "get_project",
+            "list_issues",
+            "get_issue",
+            "list_workflows",
+            "get_workflow",
+            "list_labels",
+        ]
+    );
 }
 
 #[tokio::test]

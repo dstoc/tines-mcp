@@ -1,6 +1,23 @@
 # tines-mcp
 
-`tines-mcp` is a Rust service that will expose read-only Tines data to MCP clients. This bootstrap serves Streamable HTTP at `/mcp` and process liveness at `/healthz`. It currently advertises the MCP tools capability but registers no business tools.
+**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, and labels. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
+
+## Available tools
+
+The service provides seven read-only tools:
+
+- **list_projects** and **get_project**
+- **list_issues** and **get_issue**
+- **list_workflows** and **get_workflow**
+- **list_labels**
+
+**get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response includes the current project, so a moved issue is checked against its current project.
+
+**list_issues** uses the global issue list and returns one native page. It omits descriptions by default. Set **descriptions=true** to include them. Continue only when **next_cursor** is not null, and keep the same filters on the next call. An empty page can still have a cursor when excluded projects accounted for every item on that page.
+
+Issue filters include project ID, workflow, state, category, schedule, labels, search, readiness, done-state visibility, duplicate visibility, and archived-project visibility. Project and issue reads preserve the owner or shared-member response shape returned by Tines.
+
+The service can start without Tines settings so clients can discover its tools. Calls that need Tines data require a server-side API token and **TINES_BASE_URL**.
 
 ## Run locally
 
@@ -34,7 +51,7 @@ The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place i
 | `TINES_WEB_URL` | `TINES_BASE_URL` | Optional HTTPS origin for browser links. |
 | `TINES_ALLOW_HTTP` | `false` | Allows an HTTP Tines origin only when it resolves to loopback. |
 
-Tines settings are validated when supplied, but this bootstrap does not make Tines requests or register upstream tools. It can start without Tines credentials. The service rejects malformed addresses, origins, token-source combinations, and non-loopback HTTP upstream URLs.
+Tines settings are validated at startup. The service rejects malformed addresses, origins, token-source combinations, and non-loopback HTTP upstream URLs.
 
 ## Checks
 
