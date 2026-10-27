@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -11,6 +11,7 @@ use axum::{
     response::Response,
     routing::any,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tines_mcp::{config::Config, server, tines::TinesClient};
@@ -25,6 +26,35 @@ struct MockState {
     body: Arc<Mutex<Value>>,
     responses: Arc<Mutex<HashMap<String, Value>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    replies: Arc<Mutex<HashMap<String, VecDeque<MockReply>>>>,
+}
+
+struct MockReply {
+    status: StatusCode,
+    content_type: String,
+    body: Vec<u8>,
+}
+
+impl MockReply {
+    fn json(body: Value) -> Self {
+        Self::json_with_status(StatusCode::OK, body)
+    }
+
+    fn json_with_status(status: StatusCode, body: Value) -> Self {
+        Self {
+            status,
+            content_type: "application/json".to_owned(),
+            body: serde_json::to_vec(&body).unwrap(),
+        }
+    }
+
+    fn bytes(body: impl Into<Vec<u8>>, content_type: &str) -> Self {
+        Self {
+            status: StatusCode::OK,
+            content_type: content_type.to_owned(),
+            body: body.into(),
+        }
+    }
 }
 
 impl MockState {
@@ -39,6 +69,13 @@ impl MockState {
     fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
+
+    fn set_replies(&self, path: &str, replies: impl IntoIterator<Item = MockReply>) {
+        self.replies
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), replies.into_iter().collect());
+    }
 }
 
 struct MockUpstream {
@@ -48,22 +85,29 @@ struct MockUpstream {
 }
 
 async fn mock_handler(State(state): State<MockState>, request: Request<Body>) -> Response {
-    let path = request.uri().path().to_owned();
-    state
-        .requests
+    let uri = request.uri().to_string();
+    let path = uri.split('?').next().unwrap_or_default().to_owned();
+    state.requests.lock().unwrap().push(uri);
+    let reply = state
+        .replies
         .lock()
         .unwrap()
-        .push(request.uri().to_string());
-    let body = state
-        .responses
-        .lock()
-        .unwrap()
-        .get(&path)
-        .cloned()
-        .unwrap_or_else(|| state.body.lock().unwrap().clone());
+        .get_mut(&path)
+        .and_then(VecDeque::pop_front)
+        .or_else(|| {
+            state
+                .responses
+                .lock()
+                .unwrap()
+                .get(&path)
+                .cloned()
+                .map(MockReply::json)
+        })
+        .unwrap_or_else(|| MockReply::json(state.body.lock().unwrap().clone()));
     Response::builder()
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .status(reply.status)
+        .header("Content-Type", reply.content_type)
+        .body(Body::from(reply.body))
         .unwrap()
 }
 
@@ -78,6 +122,7 @@ async fn start_mock(body: Value) -> MockUpstream {
         body: Arc::new(Mutex::new(body)),
         responses: Arc::new(Mutex::new(HashMap::new())),
         requests: Arc::new(Mutex::new(Vec::new())),
+        replies: Arc::new(Mutex::new(HashMap::new())),
     };
     let task_state = state.clone();
     let task = tokio::spawn(async move {
@@ -198,6 +243,75 @@ fn decoded_query(uri: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+fn artifact_version(version: u32, content_type: &str) -> Value {
+    json!({
+        "version": version,
+        "filename": "artifact.bin",
+        "content_type": content_type,
+        "size_bytes": 12,
+        "file_count": null,
+        "url": null,
+        "title": null,
+        "pr_repo_url": null,
+        "pr_number": null,
+        "reaffirmed_from": null,
+        "actor": null,
+        "created_at": "2026-10-28T00:00:00.000Z"
+    })
+}
+
+fn artifact_detail(
+    id: &str,
+    issue_id: &str,
+    name: &str,
+    artifact_type: &str,
+    versions: Vec<Value>,
+) -> Value {
+    let current_version = versions.last().cloned().unwrap_or(Value::Null);
+    json!({
+        "id": id,
+        "issue_id": issue_id,
+        "name": name,
+        "artifact_type": artifact_type,
+        "description": null,
+        "version_count": versions.len(),
+        "current_version": current_version,
+        "versions": versions,
+        "fresh": true,
+        "created_at": "2026-10-28T00:00:00.000Z",
+        "updated_at": "2026-10-28T00:00:00.000Z"
+    })
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn set_issue_parent_replies(
+    state: &MockState,
+    issue_id: &str,
+    project_id: &str,
+    number: u64,
+    count: usize,
+) {
+    state.set_replies(
+        &format!("/api/v1/issues/{issue_id}"),
+        (0..count).map(|_| {
+            MockReply::json(json!({
+                "id": issue_id,
+                "project_id": project_id,
+                "number": number,
+                "project_name": "Project"
+            }))
+        }),
+    );
+}
+
 #[tokio::test]
 async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_lookup_form() {
     let tools = list_tools(unconfigured_app()).await;
@@ -212,6 +326,9 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             "get_project",
             "list_issues",
             "get_issue",
+            "list_issue_artifacts",
+            "get_issue_artifact",
+            "read_artifact_content",
             "list_workflows",
             "get_workflow",
             "list_labels",
@@ -291,6 +408,566 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             .unwrap()["inputSchema"]["required"],
         json!(["context_id"])
     );
+}
+
+#[tokio::test]
+async fn artifact_metadata_is_separate_and_ordinary_issue_reads_do_not_expand_artifacts() {
+    let upstream = start_mock(json!({})).await;
+    let app = configured_app(&upstream, &[]);
+    let detail = artifact_detail(
+        "artifact-1",
+        "issue-a",
+        "design-doc",
+        "text",
+        vec![artifact_version(1, "text/markdown")],
+    );
+    set_issue_parent_replies(&upstream.state, "issue-a", "project-a", 7, 3);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-a/artifacts",
+        [MockReply::json(json!({
+            "items": [{
+                "id": "artifact-1",
+                "issue_id": "issue-a",
+                "name": "design-doc",
+                "artifact_type": "text",
+                "current_version": {"version": 1, "content_type": "text/markdown"}
+            }]
+        }))],
+    );
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-a/artifacts/design-doc",
+        [MockReply::json(detail.clone())],
+    );
+
+    let issue = call_tool(app.clone(), "get_issue", json!({"issue_id": "issue-a"})).await;
+    assert_eq!(issue["data"]["id"], "issue-a");
+    assert_eq!(upstream.state.requests(), ["/api/v1/issues/issue-a"]);
+
+    let listed = call_tool(
+        app.clone(),
+        "list_issue_artifacts",
+        json!({"issue_id": "issue-a"}),
+    )
+    .await;
+    assert_eq!(listed["data"]["items"][0]["id"], "artifact-1");
+    assert_eq!(listed["data"]["next_cursor"], Value::Null);
+
+    let fetched = call_tool(
+        app,
+        "get_issue_artifact",
+        json!({"issue_id": "issue-a", "name": "design-doc"}),
+    )
+    .await;
+    assert_eq!(fetched["data"]["versions"][0]["version"], 1);
+    assert_eq!(fetched["data"]["id"], "artifact-1");
+    assert_eq!(fetched["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/issues/issue-a",
+            "/api/v1/issues/issue-a",
+            "/api/v1/issues/issue-a/artifacts",
+            "/api/v1/issues/issue-a",
+            "/api/v1/issues/issue-a/artifacts/design-doc"
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn artifact_reads_check_the_current_issue_project_before_expansion() {
+    let upstream = start_mock(json!({})).await;
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-hidden",
+        [MockReply::json(json!({
+            "id": "issue-hidden",
+            "project_id": "project-hidden",
+            "number": 9
+        }))],
+    );
+    let app = configured_app(&upstream, &["project-hidden"]);
+    let result = call_tool(
+        app,
+        "list_issue_artifacts",
+        json!({"issue_id": "issue-hidden"}),
+    )
+    .await;
+    assert_eq!(result["error"]["source"], "visibility");
+    assert_eq!(result["error"]["code"], "resource_unavailable");
+    assert_eq!(upstream.state.requests(), ["/api/v1/issues/issue-hidden"]);
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn folder_content_uses_selected_version_and_path_and_keeps_utf8_chunks_on_boundaries() {
+    let mut first_version = artifact_version(1, "application/octet-stream");
+    first_version["files"] = json!([{
+        "path": "src/main.rs",
+        "content_type": "text/plain",
+        "size_bytes": 32771
+    }]);
+    first_version["file_count"] = json!(1);
+    let mut current_version = artifact_version(2, "application/octet-stream");
+    current_version["files"] = json!([{
+        "path": "src/main.rs",
+        "content_type": "text/plain",
+        "size_bytes": 4
+    }]);
+    current_version["file_count"] = json!(1);
+    let detail = artifact_detail(
+        "folder-id",
+        "issue-folder",
+        "source",
+        "folder",
+        vec![first_version, current_version],
+    );
+    let mut content = vec![b'a'; 32767];
+    content.extend_from_slice("☃z".as_bytes());
+    let upstream = start_mock(detail.clone()).await;
+    set_issue_parent_replies(&upstream.state, "issue-folder", "project-a", 1, 2);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-folder/artifacts/source/content",
+        [
+            MockReply::bytes(content.clone(), "text/plain; charset=utf-8"),
+            MockReply::bytes(content.clone(), "text/plain; charset=utf-8"),
+        ],
+    );
+    let app = configured_app(&upstream, &[]);
+    let first = call_tool(
+        app.clone(),
+        "read_artifact_content",
+        json!({"issue_id": "issue-folder", "name": "source", "version": 1, "path": "src/main.rs"}),
+    )
+    .await;
+    assert_eq!(first["data"]["encoding"], "utf-8");
+    assert_eq!(first["data"]["source"]["version"], 1);
+    assert_eq!(first["data"]["source"]["path"], "src/main.rs");
+    assert_eq!(first["data"]["total_bytes"], 32771);
+    assert_eq!(first["data"]["returned_length"], 32767);
+    assert_eq!(
+        first["data"]["content"].as_str().unwrap(),
+        "a".repeat(32767)
+    );
+    assert_eq!(first["data"]["next_offset"], 32767);
+
+    let second = call_tool(
+        app,
+        "read_artifact_content",
+        json!({
+            "issue_id": "issue-folder",
+            "name": "source",
+            "version": 1,
+            "path": "src/main.rs",
+            "offset": 32767,
+            "expected_sha256": first["data"]["sha256"],
+            "expected_artifact_id": "folder-id"
+        }),
+    )
+    .await;
+    assert_eq!(second["data"]["content"], "☃z");
+    assert_eq!(second["data"]["returned_length"], 4);
+    assert_eq!(second["data"]["offset"], 32767);
+    assert_eq!(second["data"]["next_offset"], Value::Null);
+    assert_eq!(second["data"]["sha256"], first["data"]["sha256"]);
+
+    let requests = upstream.state.requests();
+    assert_eq!(
+        requests.len(),
+        8,
+        "each chunk re-fetches metadata and bytes"
+    );
+    assert_eq!(
+        requests[2].split('?').next().unwrap(),
+        "/api/v1/issues/issue-folder/artifacts/source/content"
+    );
+    assert_eq!(
+        decoded_query(&requests[2]),
+        [
+            ("version".to_owned(), "1".to_owned()),
+            ("path".to_owned(), "src/main.rs".to_owned())
+        ]
+    );
+    assert_eq!(
+        decoded_query(&requests[6]),
+        [
+            ("version".to_owned(), "1".to_owned()),
+            ("path".to_owned(), "src/main.rs".to_owned())
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn omitted_version_is_pinned_and_binary_chunks_are_base64_with_repeated_bounded_fetches() {
+    let detail = artifact_detail(
+        "binary-id",
+        "issue-binary",
+        "archive",
+        "file",
+        vec![
+            artifact_version(2, "application/octet-stream"),
+            artifact_version(3, "application/octet-stream"),
+        ],
+    );
+    let bytes = (0..32770).map(|index| index as u8).collect::<Vec<_>>();
+    let upstream = start_mock(detail.clone()).await;
+    set_issue_parent_replies(&upstream.state, "issue-binary", "project-a", 2, 2);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-binary/artifacts/archive/content",
+        [
+            MockReply::bytes(bytes.clone(), "application/octet-stream"),
+            MockReply::bytes(bytes.clone(), "application/octet-stream"),
+        ],
+    );
+    let app = configured_app(&upstream, &[]);
+    let first = call_tool(
+        app.clone(),
+        "read_artifact_content",
+        json!({"issue_id": "issue-binary", "name": "archive"}),
+    )
+    .await;
+    assert_eq!(first["data"]["encoding"], "base64");
+    assert_eq!(first["data"]["source"]["version"], 3);
+    assert_eq!(first["data"]["total_bytes"], 32770);
+    assert_eq!(first["data"]["returned_length"], 32768);
+    assert_eq!(first["data"]["next_offset"], 32768);
+    assert_eq!(
+        BASE64
+            .decode(first["data"]["content"].as_str().unwrap())
+            .unwrap(),
+        bytes[..32768]
+    );
+
+    let second = call_tool(
+        app,
+        "read_artifact_content",
+        json!({
+            "issue_id": "issue-binary",
+            "name": "archive",
+            "version": 3,
+            "offset": 32768,
+            "expected_sha256": first["data"]["sha256"],
+            "expected_artifact_id": "binary-id"
+        }),
+    )
+    .await;
+    assert_eq!(second["data"]["source"]["version"], 3);
+    assert_eq!(second["data"]["offset"], 32768);
+    assert_eq!(second["data"]["returned_length"], 2);
+    assert_eq!(second["data"]["next_offset"], Value::Null);
+    assert_eq!(
+        BASE64
+            .decode(second["data"]["content"].as_str().unwrap())
+            .unwrap(),
+        bytes[32768..]
+    );
+    assert_eq!(second["data"]["sha256"], first["data"]["sha256"]);
+
+    let requests = upstream.state.requests();
+    assert_eq!(requests.len(), 8);
+    assert_eq!(
+        decoded_query(&requests[2]),
+        [("version".to_owned(), "3".to_owned())]
+    );
+    assert_eq!(
+        decoded_query(&requests[6]),
+        [("version".to_owned(), "3".to_owned())]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn deleted_and_recreated_artifact_fails_identity_recheck() {
+    let old = artifact_detail(
+        "artifact-old",
+        "issue-recreated",
+        "report",
+        "text",
+        vec![artifact_version(1, "text/plain")],
+    );
+    let replacement = artifact_detail(
+        "artifact-new",
+        "issue-recreated",
+        "report",
+        "text",
+        vec![artifact_version(1, "text/plain")],
+    );
+    let upstream = start_mock(old.clone()).await;
+    set_issue_parent_replies(&upstream.state, "issue-recreated", "project-a", 3, 1);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-recreated/artifacts/report",
+        [MockReply::json(old), MockReply::json(replacement)],
+    );
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-recreated/artifacts/report/content",
+        [MockReply::bytes("body", "text/plain")],
+    );
+    let app = configured_app(&upstream, &[]);
+    let result = call_tool(
+        app,
+        "read_artifact_content",
+        json!({"issue_id": "issue-recreated", "name": "report"}),
+    )
+    .await;
+    assert_eq!(result["error"]["code"], "content_changed");
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/issues/issue-recreated",
+            "/api/v1/issues/issue-recreated/artifacts/report",
+            "/api/v1/issues/issue-recreated/artifacts/report/content?version=1",
+            "/api/v1/issues/issue-recreated/artifacts/report"
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn continuation_detects_changed_source_digest_and_rejects_missing_identity_fields() {
+    let detail = artifact_detail(
+        "stable-artifact-id",
+        "issue-changing",
+        "payload",
+        "file",
+        vec![artifact_version(1, "application/octet-stream")],
+    );
+    let original = vec![0x41; 32769];
+    let mut changed = original.clone();
+    changed[0] = 0x42;
+    let upstream = start_mock(detail.clone()).await;
+    set_issue_parent_replies(&upstream.state, "issue-changing", "project-a", 4, 2);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-changing/artifacts/payload/content",
+        [
+            MockReply::bytes(original.clone(), "application/octet-stream"),
+            MockReply::bytes(changed, "application/octet-stream"),
+        ],
+    );
+    let app = configured_app(&upstream, &[]);
+    let first = call_tool(
+        app.clone(),
+        "read_artifact_content",
+        json!({"issue_id": "issue-changing", "name": "payload", "version": 1}),
+    )
+    .await;
+    assert_eq!(first["data"]["next_offset"], 32768);
+    let changed_result = call_tool(
+        app.clone(),
+        "read_artifact_content",
+        json!({
+            "issue_id": "issue-changing",
+            "name": "payload",
+            "version": 1,
+            "offset": 32768,
+            "expected_sha256": first["data"]["sha256"],
+            "expected_artifact_id": "stable-artifact-id"
+        }),
+    )
+    .await;
+    assert_eq!(changed_result["error"]["code"], "content_changed");
+    assert_eq!(upstream.state.requests().len(), 8);
+    upstream.task.abort();
+
+    let upstream = start_mock(detail).await;
+    set_issue_parent_replies(&upstream.state, "issue-changing", "project-a", 4, 1);
+    let app = configured_app(&upstream, &[]);
+    for args in [
+        json!({"issue_id": "issue-changing", "name": "payload", "offset": 1, "expected_sha256": "0".repeat(64), "expected_artifact_id": "stable-artifact-id"}),
+        json!({"issue_id": "issue-changing", "name": "payload", "version": 1, "offset": 1, "expected_sha256": "0".repeat(64)}),
+        json!({"issue_id": "issue-changing", "name": "payload", "version": 1, "offset": 1, "expected_artifact_id": "stable-artifact-id"}),
+    ] {
+        let result = call_tool(app.clone(), "read_artifact_content", args).await;
+        assert_eq!(result["error"]["source"], "validation");
+    }
+    assert!(upstream.state.requests().is_empty());
+    let mismatched_id = call_tool(
+        app,
+        "read_artifact_content",
+        json!({
+            "issue_id": "issue-changing",
+            "name": "payload",
+            "version": 1,
+            "offset": 1,
+            "expected_sha256": "0".repeat(64),
+            "expected_artifact_id": "replaced-artifact-id"
+        }),
+    )
+    .await;
+    assert_eq!(mismatched_id["error"]["code"], "content_changed");
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/issues/issue-changing",
+            "/api/v1/issues/issue-changing/artifacts/payload"
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn text_continuation_rejects_a_caller_offset_inside_a_utf8_code_point() {
+    let detail = artifact_detail(
+        "text-id",
+        "issue-utf8",
+        "note",
+        "text",
+        vec![artifact_version(1, "text/plain")],
+    );
+    let bytes = "a☃z".as_bytes().to_vec();
+    let upstream = start_mock(detail).await;
+    set_issue_parent_replies(&upstream.state, "issue-utf8", "project-a", 5, 1);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-utf8/artifacts/note/content",
+        [MockReply::bytes(bytes.clone(), "text/plain")],
+    );
+    let app = configured_app(&upstream, &[]);
+    let result = call_tool(
+        app,
+        "read_artifact_content",
+        json!({
+            "issue_id": "issue-utf8",
+            "name": "note",
+            "version": 1,
+            "offset": 2,
+            "expected_sha256": sha256(&bytes),
+            "expected_artifact_id": "text-id"
+        }),
+    )
+    .await;
+    assert_eq!(result["error"]["source"], "validation");
+    assert_eq!(
+        result["error"]["message"],
+        "offset: must be a UTF-8 character boundary for text content"
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn folder_content_requires_a_path_and_link_artifacts_remain_references() {
+    let mut version = artifact_version(1, "application/octet-stream");
+    version["files"] = json!([{
+        "path": "docs/readme.md",
+        "content_type": "text/markdown",
+        "size_bytes": 4
+    }]);
+    version["file_count"] = json!(1);
+    let folder = artifact_detail(
+        "folder-id",
+        "issue-folder-path",
+        "docs",
+        "folder",
+        vec![version],
+    );
+    let upstream = start_mock(folder).await;
+    set_issue_parent_replies(&upstream.state, "issue-folder-path", "project-a", 6, 1);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-folder-path/artifacts/docs/content",
+        [MockReply::json_with_status(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"error": {"code": "folder_path_required", "message": "Choose a file path"}}),
+        )],
+    );
+    let app = configured_app(&upstream, &[]);
+    let missing_path = call_tool(
+        app,
+        "read_artifact_content",
+        json!({"issue_id": "issue-folder-path", "name": "docs"}),
+    )
+    .await;
+    assert_eq!(missing_path["error"]["source"], "upstream");
+    assert_eq!(missing_path["error"]["status"], 422);
+    assert_eq!(missing_path["error"]["code"], "folder_path_required");
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/issues/issue-folder-path",
+            "/api/v1/issues/issue-folder-path/artifacts/docs",
+            "/api/v1/issues/issue-folder-path/artifacts/docs/content?version=1"
+        ]
+    );
+    upstream.task.abort();
+
+    let mut version = artifact_version(1, "text/markdown");
+    version["url"] = json!("https://example.invalid/spec");
+    let link = artifact_detail("link-id", "issue-link", "spec", "link", vec![version]);
+    let upstream = start_mock(link).await;
+    set_issue_parent_replies(&upstream.state, "issue-link", "project-a", 7, 1);
+    let app = configured_app(&upstream, &[]);
+    let result = call_tool(
+        app,
+        "get_issue_artifact",
+        json!({"issue_id": "issue-link", "name": "spec"}),
+    )
+    .await;
+    assert_eq!(
+        result["data"]["versions"][0]["url"],
+        "https://example.invalid/spec"
+    );
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/issues/issue-link",
+            "/api/v1/issues/issue-link/artifacts/spec"
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn artifact_content_source_over_one_mib_preserves_metadata_without_returning_bytes() {
+    let detail = artifact_detail(
+        "large-id",
+        "issue-large",
+        "large-file",
+        "file",
+        vec![artifact_version(1, "application/octet-stream")],
+    );
+    let upstream = start_mock(detail).await;
+    set_issue_parent_replies(&upstream.state, "issue-large", "project-a", 8, 1);
+    upstream.state.set_replies(
+        "/api/v1/issues/issue-large/artifacts/large-file/content",
+        [MockReply::bytes(
+            vec![b'x'; 1024 * 1024 + 1],
+            "application/octet-stream",
+        )],
+    );
+    let app = configured_app(&upstream, &[]);
+    let result = call_tool(
+        app,
+        "read_artifact_content",
+        json!({"issue_id": "issue-large", "name": "large-file"}),
+    )
+    .await;
+    assert_eq!(result["error"]["source"], "schema");
+    assert_eq!(result["error"]["status"], 200);
+    assert_eq!(result["error"]["code"], "content_source_too_large");
+    assert!(
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("1 MiB")
+    );
+    assert_eq!(result["error"]["details"]["limit_bytes"], 1024 * 1024);
+    assert!(result["error"]["diagnostic_id"].is_number());
+    assert_eq!(
+        result["data"]["source"],
+        json!({
+            "issue_id": "issue-large",
+            "artifact_id": "large-id",
+            "name": "large-file",
+            "version": 1,
+            "path": null
+        })
+    );
+    assert_eq!(result["data"]["mime_type"], "application/octet-stream");
+    assert!(result["data"].get("content").is_none());
+    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(
+        result["meta"]["links"][0]["href"],
+        format!("{}/issues/project-a/8", upstream.base_url)
+    );
+    assert_eq!(upstream.state.requests().len(), 4);
+    upstream.task.abort();
 }
 
 #[tokio::test]

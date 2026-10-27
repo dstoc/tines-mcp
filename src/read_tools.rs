@@ -15,6 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::content::{self, MAX_CONTENT_CHUNK_BYTES, MAX_CONTENT_SOURCE_BYTES};
 use crate::tines::{Query, ResultEnvelope, Route, TinesClient, TinesError, TinesToolCall};
 
 const MAX_PAGE_SIZE: u32 = 100;
@@ -99,6 +100,27 @@ impl ReadTools {
                 "get_issue",
                 "Read one issue by issue_id, or by project_id and positive per-project number. Use issue_id when available; transferred issues are checked against their current project.",
                 Arc::new(get_issue_schema),
+            )
+            .with_annotations(annotations())
+            .with_raw_output_schema(output_schema.clone()),
+            Tool::new(
+                "list_issue_artifacts",
+                "List metadata for an issue's artifacts. This does not fetch artifact content; use get_issue_artifact for version metadata or read_artifact_content for bounded bytes.",
+                schema_for_type::<ListIssueArtifactsArgs>(),
+            )
+            .with_annotations(annotations())
+            .with_raw_output_schema(output_schema.clone()),
+            Tool::new(
+                "get_issue_artifact",
+                "Read one issue artifact's metadata and version history without fetching its content. Link and PR artifacts remain references.",
+                schema_for_type::<GetIssueArtifactArgs>(),
+            )
+            .with_annotations(annotations())
+            .with_raw_output_schema(output_schema.clone()),
+            Tool::new(
+                "read_artifact_content",
+                "Read one bounded chunk from an issue artifact's current or selected version. Continuations require the returned version, artifact ID, and SHA-256. Content is returned as UTF-8 text or base64 bytes; it is never rendered or executed.",
+                schema_for_type::<ReadArtifactContentArgs>(),
             )
             .with_annotations(annotations())
             .with_raw_output_schema(output_schema.clone()),
@@ -393,6 +415,296 @@ impl ReadTools {
             Ok(ReadData::new(data).with_links(links))
         })
         .await
+    }
+
+    async fn list_issue_artifacts(
+        &self,
+        args: ListIssueArtifactsArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.issue_id.trim().is_empty() {
+            return validation("issue_id", "must be a non-empty issue ID");
+        }
+        self.execute(cancellation, move |call| async move {
+            let issue_link = artifact_issue_link(&call, &args.issue_id).await?;
+            let (mut data, status) = call
+                .get_json_with_status(
+                    Route::IssueArtifacts {
+                        issue_id: &args.issue_id,
+                    },
+                    &Query::new(),
+                )
+                .await?;
+            let items = collection_items_mut(&mut data, status, "artifacts")?;
+            for item in items.iter() {
+                validate_artifact_metadata(item, &args.issue_id, None, status)?;
+            }
+            normalize_unpaginated_cursor(&mut data, status)?;
+            let links = issue_link.into_iter().collect();
+            Ok(ReadData::new(data).with_links(links))
+        })
+        .await
+    }
+
+    async fn get_issue_artifact(
+        &self,
+        args: GetIssueArtifactArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.issue_id.trim().is_empty() {
+            return validation("issue_id", "must be a non-empty issue ID");
+        }
+        if args.name.trim().is_empty() {
+            return validation("name", "must be a non-empty artifact name");
+        }
+        self.execute(cancellation, move |call| async move {
+            let issue_link = artifact_issue_link(&call, &args.issue_id).await?;
+            let (data, status) = call
+                .get_json_with_status(
+                    Route::IssueArtifact {
+                        issue_id: &args.issue_id,
+                        name: &args.name,
+                    },
+                    &Query::new(),
+                )
+                .await?;
+            validate_artifact_metadata(&data, &args.issue_id, Some(&args.name), status)?;
+            if !data.get("versions").is_some_and(Value::is_array) {
+                return Err(schema_error(
+                    status,
+                    "Tines artifact detail was missing its version history.",
+                ));
+            }
+            let links = issue_link.into_iter().collect();
+            Ok(ReadData::new(data).with_links(links))
+        })
+        .await
+    }
+
+    async fn read_artifact_content(
+        &self,
+        args: ReadArtifactContentArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        if args.issue_id.trim().is_empty() {
+            return validation("issue_id", "must be a non-empty issue ID");
+        }
+        if args.name.trim().is_empty() {
+            return validation("name", "must be a non-empty artifact name");
+        }
+        let offset = args.offset.unwrap_or(0);
+        let chunk_bytes = args
+            .chunk_bytes
+            .map(|value| value as usize)
+            .unwrap_or(MAX_CONTENT_CHUNK_BYTES);
+        if args.version == Some(0) {
+            return validation("version", "must be a positive artifact version");
+        }
+        if !(4..=MAX_CONTENT_CHUNK_BYTES).contains(&chunk_bytes) {
+            return validation("chunk_bytes", "must be between 4 and 32768");
+        }
+        if args.path.as_deref().is_some_and(str::is_empty) {
+            return validation("path", "must be non-empty when provided");
+        }
+        if offset > 0 {
+            if args.version.is_none() {
+                return validation(
+                    "version",
+                    "is required when continuing at a non-zero offset",
+                );
+            }
+            if args
+                .expected_artifact_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            {
+                return validation(
+                    "expected_artifact_id",
+                    "is required when continuing at a non-zero offset",
+                );
+            }
+            if args
+                .expected_sha256
+                .as_deref()
+                .is_none_or(|digest| !is_sha256_hex(digest))
+            {
+                return validation(
+                    "expected_sha256",
+                    "must be a 64-character SHA-256 hex digest when continuing",
+                );
+            }
+        } else if args.expected_artifact_id.is_some() || args.expected_sha256.is_some() {
+            return validation(
+                "expected_sha256",
+                "digest and artifact ID are only accepted for a non-zero continuation offset",
+            );
+        }
+        if offset > MAX_CONTENT_SOURCE_BYTES as u64 {
+            return validation("offset", "must not exceed the 1 MiB source limit");
+        }
+
+        let Some(tines) = &self.tines else {
+            return TinesError::NotConfigured.to_mcp_result();
+        };
+        match tines
+            .run_tool(cancellation, move |call| async move {
+                let issue_link = artifact_issue_link(&call, &args.issue_id).await?;
+                let (metadata, metadata_status) = call
+                    .get_json_with_status(
+                        Route::IssueArtifact {
+                            issue_id: &args.issue_id,
+                            name: &args.name,
+                        },
+                        &Query::new(),
+                    )
+                    .await?;
+                let artifact_id = validate_artifact_metadata(
+                    &metadata,
+                    &args.issue_id,
+                    Some(&args.name),
+                    metadata_status,
+                )?
+                .to_owned();
+                if args
+                    .expected_artifact_id
+                    .as_deref()
+                    .is_some_and(|expected| expected != artifact_id)
+                {
+                    return Err(content_changed());
+                }
+                let version = match args.version {
+                    Some(version) => version,
+                    None => {
+                        required_artifact_version(&metadata, "current_version", metadata_status)?
+                    }
+                };
+                let artifact_type = metadata
+                    .get("artifact_type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        schema_error(
+                            metadata_status,
+                            "Tines artifact metadata was missing its type.",
+                        )
+                    })?;
+                if !metadata.get("versions").is_some_and(Value::is_array) {
+                    return Err(schema_error(
+                        metadata_status,
+                        "Tines artifact detail was missing its version history.",
+                    ));
+                }
+                if args.path.is_some() && artifact_type != "folder" {
+                    return Err(TinesError::Validation {
+                        field: "path",
+                        message: "is only valid for a folder artifact",
+                    });
+                }
+                let version_metadata = artifact_version_metadata(&metadata, version);
+                let metadata_mime_type = version_metadata
+                    .and_then(|version| version.get("content_type"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let source = json!({
+                    "issue_id": &args.issue_id,
+                    "artifact_id": &artifact_id,
+                    "name": &args.name,
+                    "version": version,
+                    "path": &args.path,
+                });
+
+                let mut query = Query::new();
+                query.append("version", version);
+                append_optional(&mut query, "path", args.path.as_deref());
+                let content_result = match call
+                    .get_bytes_with_status(
+                        Route::ArtifactContent {
+                            issue_id: &args.issue_id,
+                            name: &args.name,
+                        },
+                        &query,
+                        MAX_CONTENT_SOURCE_BYTES,
+                    )
+                    .await
+                    .map_err(map_artifact_content_error)
+                {
+                    Ok(result) => Ok(result),
+                    Err(error @ TinesError::ContentTooLarge { .. }) => Err(error),
+                    Err(error) => return Err(error),
+                };
+
+                let (after, after_status) = match call
+                    .get_json_with_status(
+                        Route::IssueArtifact {
+                            issue_id: &args.issue_id,
+                            name: &args.name,
+                        },
+                        &Query::new(),
+                    )
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) if is_not_found(&error) => return Err(content_changed()),
+                    Err(error) => return Err(error),
+                };
+                let after_id = validate_artifact_metadata(
+                    &after,
+                    &args.issue_id,
+                    Some(&args.name),
+                    after_status,
+                )?;
+                if after_id != artifact_id || artifact_version_metadata(&after, version).is_none() {
+                    return Err(content_changed());
+                }
+
+                let (bytes, content_status, response_mime_type) = match content_result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let data = json!({
+                            "source": source,
+                            "mime_type": metadata_mime_type,
+                        });
+                        let links = issue_link.into_iter().collect();
+                        return Ok(ArtifactContentRead::TooLarge { error, data, links });
+                    }
+                };
+
+                let mime_type = response_mime_type.or(metadata_mime_type);
+                let bounded = content::bounded_content(
+                    &bytes,
+                    artifact_type == "text",
+                    mime_type.as_deref(),
+                    offset,
+                    chunk_bytes as u32,
+                    args.expected_sha256.as_deref(),
+                    content_status,
+                )?;
+                let data = json!({
+                    "source": source,
+                    "mime_type": mime_type,
+                    "encoding": bounded.encoding,
+                    "total_bytes": bounded.total_bytes,
+                    "sha256": bounded.sha256,
+                    "offset": bounded.offset,
+                    "returned_length": bounded.returned_length,
+                    "content": bounded.content,
+                    "next_offset": bounded.next_offset,
+                });
+                let links = issue_link.into_iter().collect();
+                Ok(ArtifactContentRead::Complete(
+                    ReadData::new(data).with_links(links),
+                ))
+            })
+            .await
+        {
+            Ok(ArtifactContentRead::Complete(result)) => ResultEnvelope::new(result.data)
+                .with_links(result.links)
+                .with_omissions(result.omissions)
+                .to_mcp_result(),
+            Ok(ArtifactContentRead::TooLarge { error, data, links }) => {
+                error.to_mcp_result_with_context(data, links)
+            }
+            Err(error) => error.to_mcp_result(),
+        }
     }
 
     async fn list_workflows(
@@ -706,6 +1018,36 @@ impl ServerHandler for ReadTools {
                 }
                 self.get_issue(parse_args(&request)?, cancellation).await
             }
+            "list_issue_artifacts" => {
+                self.list_issue_artifacts(parse_args(&request)?, cancellation)
+                    .await
+            }
+            "get_issue_artifact" => {
+                self.get_issue_artifact(parse_args(&request)?, cancellation)
+                    .await
+            }
+            "read_artifact_content" => {
+                if let Some(field) = [
+                    "version",
+                    "path",
+                    "offset",
+                    "chunk_bytes",
+                    "expected_sha256",
+                    "expected_artifact_id",
+                ]
+                .into_iter()
+                .find(|field| {
+                    request
+                        .arguments
+                        .as_ref()
+                        .and_then(|arguments| arguments.get(*field))
+                        .is_some_and(Value::is_null)
+                }) {
+                    return Ok(validation(field, "must be omitted instead of set to null").into());
+                }
+                self.read_artifact_content(parse_args(&request)?, cancellation)
+                    .await
+            }
             "list_workflows" => {
                 self.list_workflows(parse_args(&request)?, cancellation)
                     .await
@@ -786,6 +1128,43 @@ struct GetIssueArgs {
     project_id: Option<String>,
     /// Positive per-project issue number; required with project_id.
     number: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListIssueArtifactsArgs {
+    /// Immutable issue ID whose artifact metadata should be listed.
+    issue_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetIssueArtifactArgs {
+    /// Immutable issue ID that owns the artifact.
+    issue_id: String,
+    /// Exact artifact name.
+    name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReadArtifactContentArgs {
+    /// Immutable issue ID that owns the artifact.
+    issue_id: String,
+    /// Exact artifact name.
+    name: String,
+    /// Positive version number. Omit on the first read to pin the then-current version.
+    version: Option<u32>,
+    /// Workspace-relative file path for a folder artifact.
+    path: Option<String>,
+    /// Source byte offset. A non-zero offset requires version, expected_sha256, and expected_artifact_id.
+    offset: Option<u64>,
+    /// Maximum decoded bytes to return, from 4 through 32768. Defaults to 32768.
+    chunk_bytes: Option<u32>,
+    /// SHA-256 returned by the previous chunk for this complete source.
+    expected_sha256: Option<String>,
+    /// Artifact ID returned by the previous chunk.
+    expected_artifact_id: Option<String>,
 }
 
 impl GetIssueArgs {
@@ -944,6 +1323,15 @@ enum IssueLookup {
     ProjectNumber { project_id: String, number: u64 },
 }
 
+enum ArtifactContentRead {
+    Complete(ReadData),
+    TooLarge {
+        error: TinesError,
+        data: Value,
+        links: Vec<Value>,
+    },
+}
+
 struct ReadData {
     data: Value,
     links: Vec<Value>,
@@ -1071,6 +1459,10 @@ fn collection_items_mut<'a>(
         .get_mut("items")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| match resource {
+            "artifacts" => schema_error(
+                status,
+                "Tines artifact response was missing an items array.",
+            ),
             "projects" => {
                 schema_error(status, "Tines project response was missing an items array.")
             }
@@ -1210,6 +1602,159 @@ fn issue_project_id(data: &Value, status: u16) -> Result<&str, TinesError> {
         status,
         "Tines issue response was missing its current project ID.",
     ))
+}
+
+async fn artifact_issue_link(
+    call: &TinesToolCall,
+    issue_id: &str,
+) -> Result<Option<Value>, TinesError> {
+    let (issue, status) = call
+        .get_json_with_status(Route::Issue { issue_id }, &Query::new())
+        .await?;
+    let returned_id = issue
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            schema_error(status, "Tines issue response was missing its immutable ID.")
+        })?;
+    if returned_id != issue_id {
+        return Err(schema_error(
+            status,
+            "Tines returned a different issue than requested.",
+        ));
+    }
+    let has_exclusions = call.has_project_exclusions();
+    let project_id = match issue_project_id(&issue, status) {
+        Ok(project_id) => project_id,
+        Err(_) if !has_exclusions => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if has_exclusions {
+        reject_excluded(call, project_id, "artifact")?;
+    }
+    let number = issue.get("number").and_then(Value::as_u64);
+    let project_name = issue
+        .get("project_name")
+        .and_then(Value::as_str)
+        .or_else(|| issue.pointer("/project/name").and_then(Value::as_str));
+    Ok(number.and_then(|number| issue_link(call, project_id, number, project_name)))
+}
+
+fn validate_artifact_metadata<'a>(
+    data: &'a Value,
+    issue_id: &str,
+    expected_name: Option<&str>,
+    status: u16,
+) -> Result<&'a str, TinesError> {
+    if !data.is_object() {
+        return Err(schema_error(
+            status,
+            "Tines artifact response was not an object.",
+        ));
+    }
+    let artifact_id = data
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            schema_error(
+                status,
+                "Tines artifact response was missing its immutable ID.",
+            )
+        })?;
+    let name = data
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| schema_error(status, "Tines artifact response was missing its name."))?;
+    if expected_name.is_some_and(|expected| name != expected) {
+        return Err(schema_error(
+            status,
+            "Tines returned a different artifact than requested.",
+        ));
+    }
+    if data.get("issue_id").and_then(Value::as_str) != Some(issue_id) {
+        return Err(schema_error(
+            status,
+            "Tines artifact response did not match the requested issue.",
+        ));
+    }
+    if !matches!(
+        data.get("artifact_type").and_then(Value::as_str),
+        Some("file" | "text" | "link" | "pr" | "folder")
+    ) {
+        return Err(schema_error(
+            status,
+            "Tines artifact response was missing a recognized artifact type.",
+        ));
+    }
+    required_artifact_version(data, "current_version", status)?;
+    if let Some(versions) = data.get("versions")
+        && !versions.is_array()
+    {
+        return Err(schema_error(
+            status,
+            "Tines artifact response contained an invalid version list.",
+        ));
+    }
+    Ok(artifact_id)
+}
+
+fn required_artifact_version(
+    data: &Value,
+    field: &'static str,
+    status: u16,
+) -> Result<u32, TinesError> {
+    data.get(field)
+        .and_then(|value| value.get("version"))
+        .and_then(Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+        .filter(|version| *version > 0)
+        .ok_or_else(|| {
+            schema_error(
+                status,
+                "Tines artifact response was missing a valid version.",
+            )
+        })
+}
+
+fn artifact_version_metadata(data: &Value, version: u32) -> Option<&Value> {
+    data.get("versions")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("version").and_then(Value::as_u64) == Some(u64::from(version)))
+}
+
+fn content_changed() -> TinesError {
+    TinesError::Schema {
+        status: None,
+        code: "content_changed",
+        message: "The artifact identity or content changed between bounded reads; restart at offset 0.",
+    }
+}
+
+fn is_not_found(error: &TinesError) -> bool {
+    matches!(error, TinesError::Upstream { status: 404, .. })
+}
+
+fn map_artifact_content_error(error: TinesError) -> TinesError {
+    match error {
+        TinesError::BodyTooLarge {
+            status,
+            limit_bytes,
+            diagnostic_id,
+        } => TinesError::ContentTooLarge {
+            status,
+            limit_bytes,
+            diagnostic_id,
+        },
+        other => other,
+    }
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 async fn resolve_issue_project_id(
