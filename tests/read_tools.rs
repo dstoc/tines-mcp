@@ -274,6 +274,10 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
         list_events["inputSchema"]["properties"]["event_types"]["items"]["type"],
         "string"
     );
+    assert_eq!(
+        list_events["inputSchema"]["properties"]["state"]["description"],
+        "Filter by workflow state ID referenced by an event payload."
+    );
 }
 
 #[tokio::test]
@@ -343,6 +347,22 @@ async fn event_list_maps_filters_time_bounds_and_open_type_strings() {
         ]
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
     );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn event_list_rejects_an_empty_workflow_state_id() {
+    let upstream = start_mock(json!({})).await;
+    let app = configured_app(&upstream, &[]);
+
+    let result = call_tool(app, "list_events", json!({"state": "  "})).await;
+
+    assert_eq!(result["error"]["source"], "validation");
+    assert_eq!(
+        result["error"]["message"],
+        "state: must be a non-empty workflow state ID"
+    );
+    assert!(upstream.state.requests().is_empty());
     upstream.task.abort();
 }
 

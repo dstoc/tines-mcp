@@ -487,7 +487,7 @@ impl ReadTools {
             .as_deref()
             .is_some_and(|value| value.trim().is_empty())
         {
-            return validation("state", "must be a non-empty state ID or name");
+            return validation("state", "must be a non-empty workflow state ID");
         }
         if args.since.as_ref().is_some_and(TimeBound::is_empty)
             || args.until.as_ref().is_some_and(TimeBound::is_empty)
@@ -740,7 +740,7 @@ struct ListEventsArgs {
     /// Event type strings to include. This list is open-ended as Tines adds event types.
     #[serde(default)]
     event_types: Vec<String>,
-    /// Workflow state ID or name referenced by an event payload.
+    /// Filter by workflow state ID referenced by an event payload.
     state: Option<String>,
     /// Inclusive lower time bound as epoch milliseconds or an ISO 8601 timestamp.
     since: Option<TimeBound>,
