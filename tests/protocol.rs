@@ -15,7 +15,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use rmcp::{
-    ServerHandler, ServiceExt,
+    ServerHandler, ServiceExt as McpServiceExt,
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
         Implementation, ProtocolVersion, ServerCapabilities, ServerConfig,
@@ -459,7 +459,10 @@ async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() 
         .peer()
         .peer_info()
         .expect("negotiation should expose server information");
-    assert_eq!(server_info.protocol_version, ProtocolVersion::LATEST);
+    assert_eq!(
+        server_info.protocol_version,
+        ProtocolVersion::LATEST_WITH_INITIALIZE
+    );
 
     let tools = client
         .list_all_tools()
