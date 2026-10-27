@@ -2109,6 +2109,57 @@ async fn run_log_tail_and_full_sources_are_bounded_and_continuations_check_the_d
 }
 
 #[tokio::test]
+async fn oversized_full_run_log_preserves_run_metadata_and_issue_link() {
+    let upstream = start_mock(json!({})).await;
+    upstream.state.set_response(
+        "/api/v1/runs/run-large",
+        run_detail("run-large", "issue-large"),
+    );
+    upstream.state.set_response(
+        "/api/v1/issues/issue-large",
+        json!({"id": "issue-large", "project_id": "project-a", "number": 7, "project_name": "Project"}),
+    );
+    upstream.state.set_replies(
+        "/api/v1/runs/run-large/log",
+        [MockReply::bytes(
+            vec![b'x'; 1024 * 1024 + 1],
+            "text/plain; charset=utf-8",
+        )],
+    );
+    let app = configured_app(&upstream, &[]);
+
+    let result = call_tool(
+        app,
+        "get_run_log",
+        json!({"run_id": "run-large", "mode": "full"}),
+    )
+    .await;
+
+    assert_eq!(result["error"]["source"], "schema");
+    assert_eq!(result["error"]["status"], 200);
+    assert_eq!(result["error"]["code"], "content_source_too_large");
+    assert_eq!(result["error"]["details"]["limit_bytes"], 1024 * 1024);
+    assert_eq!(
+        result["data"]["source"],
+        json!({"run_id": "run-large", "mode": "full"})
+    );
+    assert_eq!(result["data"]["run"]["status"], "completed");
+    assert_eq!(result["data"]["run"]["outcome"], "stalled");
+    assert_eq!(result["data"]["run"]["log_bytes_dropped"], 12);
+    assert_eq!(result["data"]["run"]["log_full_bytes"], 25);
+    assert_eq!(result["data"]["run"]["log_raw_bytes"], 0);
+    assert_eq!(result["data"]["run"]["log_expired"], false);
+    assert!(result["data"].get("content").is_none());
+    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(
+        result["meta"]["links"][0]["href"],
+        format!("{}/issues/project-a/7", upstream.base_url)
+    );
+    assert_eq!(upstream.state.requests().len(), 3);
+    upstream.task.abort();
+}
+
+#[tokio::test]
 async fn full_run_log_preserves_missing_expired_and_temporarily_unavailable_statuses() {
     for status in [
         StatusCode::NOT_FOUND,

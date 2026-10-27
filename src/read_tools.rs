@@ -1242,68 +1242,102 @@ impl ReadTools {
             );
         }
 
-        self.execute(cancellation, move |call| async move {
-            let (detail, detail_status) = get_run_detail(&call, &args.run_id).await?;
-            let issue_id = run_issue_id(&detail, detail_status)?;
-            let issue_link = run_issue_link(&call, issue_id, "run log").await?;
-            let log_metadata = run_log_metadata(&detail, detail_status)?;
-            let (bytes, status, mime_type, mode) = match args.mode {
-                RunLogMode::Tail => {
-                    let tail = detail.get("log").and_then(Value::as_str).ok_or_else(|| {
-                        schema_error(detail_status, "Tines run detail was missing its log tail.")
-                    })?;
-                    (
-                        tail.as_bytes().to_vec(),
-                        detail_status,
-                        Some("text/plain; charset=utf-8".to_owned()),
-                        "tail",
-                    )
-                }
-                RunLogMode::Full => {
-                    let (bytes, status, mime_type) = call
-                        .get_bytes_with_status(
-                            Route::RunLog {
-                                run_id: &args.run_id,
-                            },
-                            &Query::new(),
-                            MAX_CONTENT_SOURCE_BYTES,
+        let Some(tines) = &self.tines else {
+            return TinesError::NotConfigured.to_mcp_result();
+        };
+        match tines
+            .run_tool(cancellation, move |call| async move {
+                let (detail, detail_status) = get_run_detail(&call, &args.run_id).await?;
+                let issue_id = run_issue_id(&detail, detail_status)?;
+                let issue_link = run_issue_link(&call, issue_id, "run log").await?;
+                let log_metadata = run_log_metadata(&detail, detail_status)?;
+                let (bytes, status, mime_type, mode) = match args.mode {
+                    RunLogMode::Tail => {
+                        let tail = detail.get("log").and_then(Value::as_str).ok_or_else(|| {
+                            schema_error(
+                                detail_status,
+                                "Tines run detail was missing its log tail.",
+                            )
+                        })?;
+                        (
+                            tail.as_bytes().to_vec(),
+                            detail_status,
+                            Some("text/plain; charset=utf-8".to_owned()),
+                            "tail",
                         )
-                        .await
-                        .map_err(map_run_log_content_error)?;
-                    (bytes, status, mime_type, "full")
-                }
-            };
-            let bounded = content::bounded_content(
-                &bytes,
-                true,
-                mime_type.as_deref(),
-                offset,
-                chunk_bytes,
-                args.expected_sha256.as_deref(),
-                status,
-            )?;
-            let data = json!({
-                "source": {"run_id": args.run_id, "mode": mode},
-                "mime_type": mime_type,
-                "encoding": bounded.encoding,
-                "total_bytes": bounded.total_bytes,
-                "sha256": bounded.sha256,
-                "offset": bounded.offset,
-                "returned_length": bounded.returned_length,
-                "content": bounded.content,
-                "next_offset": bounded.next_offset,
-                "run": {
-                    "status": log_metadata["status"],
-                    "outcome": log_metadata["outcome"],
-                    "log_bytes_dropped": log_metadata["log_bytes_dropped"],
-                    "log_full_bytes": log_metadata["log_full_bytes"],
-                    "log_raw_bytes": log_metadata["log_raw_bytes"],
-                    "log_expired": log_metadata["log_expired"],
-                },
-            });
-            Ok(ReadData::new(data).with_links(issue_link.into_iter().collect()))
-        })
-        .await
+                    }
+                    RunLogMode::Full => {
+                        let result = call
+                            .get_bytes_with_status(
+                                Route::RunLog {
+                                    run_id: &args.run_id,
+                                },
+                                &Query::new(),
+                                MAX_CONTENT_SOURCE_BYTES,
+                            )
+                            .await
+                            .map_err(map_run_log_content_error);
+                        match result {
+                            Ok((bytes, status, mime_type)) => (bytes, status, mime_type, "full"),
+                            Err(error @ TinesError::ContentTooLarge { .. }) => {
+                                let data = json!({
+                                    "source": {"run_id": &args.run_id, "mode": "full"},
+                                    "mime_type": null,
+                                    "run": log_metadata,
+                                });
+                                return Ok(RunLogRead::TooLarge {
+                                    error,
+                                    data,
+                                    links: issue_link.into_iter().collect(),
+                                });
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                };
+                let bounded = content::bounded_content(
+                    &bytes,
+                    true,
+                    mime_type.as_deref(),
+                    offset,
+                    chunk_bytes,
+                    args.expected_sha256.as_deref(),
+                    status,
+                )?;
+                let data = json!({
+                    "source": {"run_id": args.run_id, "mode": mode},
+                    "mime_type": mime_type,
+                    "encoding": bounded.encoding,
+                    "total_bytes": bounded.total_bytes,
+                    "sha256": bounded.sha256,
+                    "offset": bounded.offset,
+                    "returned_length": bounded.returned_length,
+                    "content": bounded.content,
+                    "next_offset": bounded.next_offset,
+                    "run": {
+                        "status": log_metadata["status"],
+                        "outcome": log_metadata["outcome"],
+                        "log_bytes_dropped": log_metadata["log_bytes_dropped"],
+                        "log_full_bytes": log_metadata["log_full_bytes"],
+                        "log_raw_bytes": log_metadata["log_raw_bytes"],
+                        "log_expired": log_metadata["log_expired"],
+                    },
+                });
+                Ok(RunLogRead::Complete(
+                    ReadData::new(data).with_links(issue_link.into_iter().collect()),
+                ))
+            })
+            .await
+        {
+            Ok(RunLogRead::Complete(result)) => ResultEnvelope::new(result.data)
+                .with_links(result.links)
+                .with_omissions(result.omissions)
+                .to_mcp_result(),
+            Ok(RunLogRead::TooLarge { error, data, links }) => {
+                error.to_mcp_result_with_context(data, links)
+            }
+            Err(error) => error.to_mcp_result(),
+        }
     }
 
     async fn explain_dispatch(
@@ -1831,6 +1865,15 @@ enum IssueLookup {
 }
 
 enum ArtifactContentRead {
+    Complete(ReadData),
+    TooLarge {
+        error: TinesError,
+        data: Value,
+        links: Vec<Value>,
+    },
+}
+
+enum RunLogRead {
     Complete(ReadData),
     TooLarge {
         error: TinesError,
