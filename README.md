@@ -165,7 +165,7 @@ The example pins the current official [`tunnel-client` release v0.0.18](https://
 
    The command probes `/healthz`, `/readyz`, and the control-plane poll metric over loopback in the shared namespace. A passing health check confirms process/readiness signals and a successful poll; it does not prove that the intended MCP client can complete a tool call.
 
-6. Connect the intended OpenAI MCP client through the tunnel, discover the tools, and make a safe read such as `list_projects` for an authorized Tines account. Only a successful read through that client verifies the full client-to-tunnel-to-adapter-to-Tines path, including the Tines token. Process liveness, a tunnel poll, and adapter health are not substitutes for this read.
+5. Connect the intended OpenAI MCP client through the tunnel, discover the tools, and make a safe read such as `list_projects` for an authorized Tines account. Only a successful read through that client verifies the full client-to-tunnel-to-adapter-to-Tines path, including the Tines token. Process liveness, a tunnel poll, and adapter health are not substitutes for this read.
 
 To replace `tines-mcp`, stop and remove `tunnel-client` first, then stop and remove `tines-mcp`:
 
@@ -180,7 +180,7 @@ Start the replacement adapter and recreate `tunnel-client` with `--network conta
 
 The tunnel controls access to its endpoint. It does not add authentication to this MCP server or reduce the permissions of its configured Tines token. Host and Origin validation are additional request checks, not an access-control boundary.
 
-The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration and read behavior. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 6. This repository has not performed that end-to-end check.
+The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration and read behavior. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 5. This repository has not performed that end-to-end check.
 
 ## Runtime limits
 
