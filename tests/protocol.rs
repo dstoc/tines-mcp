@@ -1,11 +1,29 @@
+use std::future::Future;
+
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
+    routing::get,
 };
 use http_body_util::BodyExt;
+use rmcp::{
+    ServerHandler,
+    model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+        ServerCapabilities, ServerConfig,
+    },
+    service::{RequestContext, RoleServer},
+    transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    },
+};
 use serde_json::{Value, json};
-use tines_mcp::{config::Config, server};
+use tines_mcp::{
+    config::Config,
+    server,
+    tines::{Query, Route, TinesClient},
+};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -14,6 +32,44 @@ const DISCOVER_2026: &str = include_str!("fixtures/discover-2026-07-28.json");
 const DISCOVER_2025: &str = include_str!("fixtures/discover-2025-11-25.json");
 const INITIALIZE_2025: &str = include_str!("fixtures/initialize-2025-11-25.json");
 const INITIALIZE_2026_FALLBACK: &str = include_str!("fixtures/initialize-2026-07-28-fallback.json");
+
+#[derive(Clone)]
+struct UpstreamAuthFailure {
+    result: CallToolResult,
+}
+
+impl ServerHandler for UpstreamAuthFailure {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("tines-mcp-test", "0.1.0"))
+    }
+
+    fn call_tool(
+        &self,
+        _request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Ok(self.result.clone().into()))
+    }
+}
+
+fn upstream_auth_error_app(result: CallToolResult) -> Router {
+    let config = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
+        .with_allowed_hosts(vec!["localhost".to_owned()])
+        .enforce_origin_validation();
+    let service = StreamableHttpService::new(
+        move || {
+            Ok(UpstreamAuthFailure {
+                result: result.clone(),
+            })
+        },
+        LocalSessionManager::default().into(),
+        config,
+    );
+    Router::new().nest_service("/mcp", service)
+}
 
 fn app() -> Router {
     let config = Config::from_lookup(|_| None).expect("default config should be valid");
@@ -90,6 +146,7 @@ async fn discovery_supports_both_protocol_revisions_and_only_advertises_tools() 
     for (version, fixture) in [("2026-07-28", DISCOVER_2026), ("2025-11-25", DISCOVER_2025)] {
         let response = post_fixture(app(), version, "server/discover", fixture).await;
         assert_eq!(response.status(), StatusCode::OK, "version {version}");
+        assert_eq!(response.headers().get("Cache-Control").unwrap(), "no-store");
         assert!(response.headers().get("Mcp-Session-Id").is_none());
         let body = response_json(response).await;
         let result = &body["result"];
@@ -246,4 +303,115 @@ async fn configured_custom_origin_port_remains_exact() {
         discovery_status(app, Some("https://client.example")).await,
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+async fn upstream_401_and_403_remain_mcp_tool_errors() {
+    for status in [401, 403] {
+        let upstream_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock Tines listener should bind");
+        let upstream_address = upstream_listener
+            .local_addr()
+            .expect("mock Tines listener should have an address");
+        let upstream_status = StatusCode::from_u16(status).expect("test status should be valid");
+        let upstream_app = Router::new().route(
+            "/api/v1/projects",
+            get(move || async move {
+                axum::http::Response::builder()
+                    .status(upstream_status)
+                    .header(header::WWW_AUTHENTICATE, "Bearer")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"error":{"code":"access_denied","message":"Tines refused the configured credential."}}"#,
+                    ))
+                    .expect("mock upstream response should build")
+            }),
+        );
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream_app)
+                .await
+                .expect("mock Tines server should remain available");
+        });
+        let base_url = format!("http://{upstream_address}");
+        let values = [
+            ("TINES_BASE_URL", base_url.as_str()),
+            ("TINES_API_TOKEN", "local-test-token"),
+            ("TINES_ALLOW_HTTP", "true"),
+        ];
+        let config = Config::from_lookup(|name| {
+            values
+                .iter()
+                .find_map(|(key, value)| (*key == name).then(|| (*value).to_owned()))
+        })
+        .expect("mock Tines config should validate locally");
+        let client = TinesClient::new(config.tines.as_ref().unwrap())
+            .expect("client build should not contact Tines");
+        let error = client
+            .run_tool(CancellationToken::new(), |call| async move {
+                let query = Query::new();
+                call.get_json(Route::Projects, &query).await
+            })
+            .await
+            .expect_err("upstream authorization failure should become a tool error");
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("Host", "localhost")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-11-25")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": status,
+                    "method": "tools/call",
+                    "params": {"name": "auth-test", "arguments": {}}
+                })
+                .to_string(),
+            ))
+            .expect("tool request should build");
+        let response = upstream_auth_error_app(error.to_mcp_result())
+            .oneshot(request)
+            .await
+            .expect("in-process MCP request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("WWW-Authenticate").is_none());
+        let body = response_json(response).await;
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(
+            body["result"]["structuredContent"]["error"]["status"],
+            status
+        );
+        assert_eq!(
+            body["result"]["structuredContent"]["error"]["source"],
+            "upstream"
+        );
+        upstream_task.abort();
+    }
+}
+
+#[tokio::test]
+async fn mcp_request_body_limit_rejects_oversized_content_without_echoing_it() {
+    let private_body = "private-request-body".repeat(4096);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("Host", "localhost")
+        .header("Content-Type", "application/json")
+        .body(Body::from(private_body.clone()))
+        .expect("oversized request should build");
+    let response = app()
+        .oneshot(request)
+        .await
+        .expect("in-process HTTP request should be handled");
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("response body should be readable")
+        .to_bytes();
+    assert!(!String::from_utf8_lossy(&body).contains(&private_body));
 }

@@ -1,6 +1,14 @@
 use std::io;
 
-use axum::{Router, http::StatusCode, routing::get};
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    extract::Request,
+    http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
+    middleware::{Next, from_fn},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use rmcp::{
     ServerHandler,
     model::{Implementation, ServerCapabilities, ServerConfig},
@@ -12,9 +20,14 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::tines::TinesClient;
+
+const MAX_MCP_REQUEST_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
-struct BootstrapServer;
+struct BootstrapServer {
+    _tines: Option<TinesClient>,
+}
 
 impl ServerHandler for BootstrapServer {
     fn get_info(&self) -> ServerConfig {
@@ -24,6 +37,14 @@ impl ServerHandler for BootstrapServer {
 }
 
 pub fn router(config: &Config, cancellation_token: CancellationToken) -> Router {
+    router_with_client(config, None, cancellation_token)
+}
+
+fn router_with_client(
+    config: &Config,
+    tines: Option<TinesClient>,
+    cancellation_token: CancellationToken,
+) -> Router {
     let server_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true)
@@ -32,7 +53,11 @@ pub fn router(config: &Config, cancellation_token: CancellationToken) -> Router 
         .enforce_origin_validation()
         .with_cancellation_token(cancellation_token);
     let mcp = StreamableHttpService::new(
-        || Ok(BootstrapServer),
+        move || {
+            Ok(BootstrapServer {
+                _tines: tines.clone(),
+            })
+        },
         LocalSessionManager::default().into(),
         server_config,
     );
@@ -40,6 +65,30 @@ pub fn router(config: &Config, cancellation_token: CancellationToken) -> Router 
     Router::new()
         .route("/healthz", get(healthz))
         .nest_service("/mcp", mcp)
+        .layer(from_fn(limit_mcp_request_body))
+}
+
+async fn limit_mcp_request_body(request: Request, next: Next) -> Response {
+    if request.uri().path() != "/mcp" {
+        return next.run(request).await;
+    }
+
+    let (parts, body) = request.into_parts();
+    let body = match to_bytes(body, MAX_MCP_REQUEST_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            let mut response = StatusCode::PAYLOAD_TOO_LARGE.into_response();
+            response
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            return response;
+        }
+    };
+    let mut response = next.run(Request::from_parts(parts, Body::from(body))).await;
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 pub async fn run(
@@ -47,7 +96,13 @@ pub async fn run(
     config: &Config,
     cancellation_token: CancellationToken,
 ) -> io::Result<()> {
-    let app = router(config, cancellation_token.clone());
+    let tines = config
+        .tines
+        .as_ref()
+        .map(TinesClient::new)
+        .transpose()
+        .map_err(io::Error::other)?;
+    let app = router_with_client(config, tines, cancellation_token.clone());
     axum::serve(listener, app)
         .with_graceful_shutdown(cancellation_token.cancelled_owned())
         .await
