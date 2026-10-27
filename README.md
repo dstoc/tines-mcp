@@ -43,7 +43,39 @@ curl -i http://127.0.0.1:8080/healthz
 
 The health endpoint returns `204 No Content`. It does not contact Tines or validate an upstream token.
 
-The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a private network or tunnel that controls access. The default Host allowlist permits loopback hosts. Browser requests with an `Origin` header are rejected unless that exact origin is configured.
+The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. Read-only access can still reveal sensitive data.
+
+The default Host allowlist permits loopback hosts. Browser requests with an `Origin` header are rejected unless that exact origin is configured. Host and Origin checks limit unintended requests, but they are not authentication.
+
+## Build and run the container
+
+Build the image from the repository root:
+
+```sh
+docker build -f Containerfile -t tines-mcp:local .
+```
+
+The build stage uses Rust 1.98.1 and `Cargo.lock`. The runtime image includes the CA certificate bundle used to verify HTTPS connections and runs the service as UID 10001. It contains no Tines token. The service is stateless and requires no writable data volume.
+
+The `.dockerignore` file limits the build context to the Cargo files, toolchain pin, and Rust source. Local environment files, Git data, and build output are excluded.
+
+For a local container, publish the port only on the host loopback interface. The process must bind to the container interface so the published port can reach it:
+
+```sh
+docker run --rm --stop-timeout 60 \
+  --publish 127.0.0.1:8080:8080 \
+  --env MCP_BIND_ADDR=0.0.0.0:8080 \
+  --env TINES_BASE_URL=https://tenant.tines.com \
+  --env TINES_API_TOKEN_FILE=/run/secrets/tines-api-token \
+  --mount type=bind,src=/secure/path/tines-api-token,dst=/run/secrets/tines-api-token,readonly \
+  tines-mcp:local
+```
+
+Provide the token file outside the image and make it readable by UID 10001. If your runtime manages environment secrets, you can set `TINES_API_TOKEN` instead. Set exactly one token source. Do not pass the token as a command-line argument or build argument.
+
+The command publishes port 8080 on host loopback only. If an MCP client sends an `Origin` header, set `MCP_ALLOWED_ORIGINS` to that exact origin. The default empty list rejects every request that has an `Origin` header.
+
+The process handles `SIGTERM` and stops accepting requests gracefully. The example allows up to 60 seconds for shutdown; the runtime timeout should be longer than the 45-second tool deadline if in-flight reads need to finish.
 
 ## Configuration
 
@@ -52,7 +84,7 @@ The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place i
 | `MCP_BIND_ADDR` | `127.0.0.1:8080` | Listener address. |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated Host allowlist. Entries can include a port. |
 | `MCP_ALLOWED_ORIGINS` | Empty | Comma-separated exact browser origins. An empty list rejects every present `Origin` header. |
-| `TINES_BASE_URL` | Unset | HTTPS origin for Tines. Required when any Tines setting is supplied. |
+| `TINES_BASE_URL` | Unset | Tines origin. HTTPS is required except for an explicitly enabled loopback HTTP origin. Required when any Tines setting is supplied. |
 | `TINES_API_TOKEN_FILE` | Unset | Path to a readable, non-empty token file. Set exactly one token source. |
 | `TINES_API_TOKEN` | Unset | Token from the environment. Set exactly one token source. |
 | `TINES_EXCLUDED_PROJECT_IDS` | Empty | Comma-separated immutable project IDs to exclude. |
@@ -60,6 +92,53 @@ The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place i
 | `TINES_ALLOW_HTTP` | `false` | Allows an HTTP Tines origin only when it resolves to loopback. |
 
 Tines settings are validated at startup. The service rejects malformed addresses, origins, token-source combinations, and non-loopback HTTP upstream URLs.
+
+## Private Secure MCP Tunnel deployment
+
+[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) can connect supported OpenAI products to a private MCP server. This is a separate service from `tines-mcp`: run its `tunnel-client` inside the same deliberately restricted network as this server. It makes an outbound connection to OpenAI and forwards MCP requests to the private server. Do not publish the `tines-mcp` port to the public internet.
+
+The following steps describe the deployment shape. This repository has not verified an end-to-end Secure MCP Tunnel connection.
+
+1. Provision a tunnel in OpenAI Platform and obtain its tunnel ID and a runtime API key with Tunnels Read and Use permissions. Follow the current [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [`tunnel-client` onboarding guide](https://github.com/openai/tunnel-client/blob/master/docs/onboarding.md).
+2. Create a private container network. Run `tines-mcp` on that network without a published port. Set the listener and Host allowlist for the private service name, then mount the Tines token file as described above:
+
+   ```sh
+   docker network create tines-mcp-private
+   docker run -d --name tines-mcp \
+     --network tines-mcp-private --network-alias tines-mcp \
+     --env MCP_BIND_ADDR=0.0.0.0:8080 \
+     --env MCP_ALLOWED_HOSTS=tines-mcp:8080 \
+     --env TINES_BASE_URL=https://tenant.tines.com \
+     --env TINES_API_TOKEN_FILE=/run/secrets/tines-api-token \
+     --mount type=bind,src=/secure/path/tines-api-token,dst=/run/secrets/tines-api-token,readonly \
+     tines-mcp:local
+   ```
+
+   Do not add a `--publish` option. Restrict membership in this network to the MCP server and the tunnel client. Any peer on the network can call this unauthenticated endpoint with the configured Tines token's authority.
+3. Run `tunnel-client` as a separate process or container that can reach `tines-mcp:8080`. For a provisioned tunnel ID, the current CLI supports this profile setup:
+
+   ```sh
+   tunnel-client init \
+     --sample sample_mcp_remote_no_auth \
+     --profile tines-mcp \
+     --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
+     --mcp-server-url http://tines-mcp:8080/mcp
+   tunnel-client doctor --profile tines-mcp --explain
+   tunnel-client run --profile tines-mcp
+   ```
+
+   Supply `CONTROL_PLANE_API_KEY` to `tunnel-client` through its runtime secret mechanism. Do not put the key in the profile or a command argument. If forwarded MCP requests contain an `Origin` header, set `MCP_ALLOWED_ORIGINS` to the exact value; this service rejects present origins by default.
+4. Keep `tunnel-client run` available while connecting and using the server from a supported OpenAI product. Verify tunnel readiness, discover the tools, and make a safe read call. Follow the current tunnel guide for product setup, tunnel associations, and permissions.
+
+The tunnel controls access to its endpoint. It does not add authentication to this MCP server or reduce the permissions of its configured Tines token. Host and Origin allowlists are additional request checks, not an access-control boundary.
+
+## Runtime limits
+
+- Each Tines tool call has a 45-second deadline and a 5-second connection timeout.
+- The process admits up to four concurrent tool calls and eight concurrent upstream requests. It rate-limits calls to 10 per second with a burst of 20. Excess work is rejected instead of queued, and upstream requests are not retried automatically.
+- MCP request bodies are limited to 64 KiB. Tines JSON responses are limited to 32 MiB; upstream error bodies are limited to 8 KiB.
+- The complete serialized MCP tool result is limited to 512 KiB. Oversized results return an error instead of a truncated success.
+- The service stores no Tines data, performs no background polling, and requires no writable data volume. `/healthz` reports process liveness only.
 
 ## Checks
 
