@@ -1482,6 +1482,8 @@ dependencies = [
  "http-body-util",
  "reqwest",
  "rmcp",
+ "schemars",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",

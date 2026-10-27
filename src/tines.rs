@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt,
     future::Future,
@@ -216,8 +216,10 @@ pub struct TinesClient {
 struct ClientInner {
     http: Client,
     base_url: Url,
+    web_url: Url,
     authorization: HeaderValue,
     api_token: Secret,
+    excluded_project_ids: HashSet<String>,
     tool_slots: Arc<Semaphore>,
     request_slots: Arc<Semaphore>,
     rate_limit: RateLimit,
@@ -288,8 +290,10 @@ impl TinesClient {
             inner: Arc::new(ClientInner {
                 http,
                 base_url: config.base_url.clone(),
+                web_url: config.web_url.clone(),
                 authorization,
                 api_token: config.api_token.clone(),
+                excluded_project_ids: config.excluded_project_ids().iter().cloned().collect(),
                 tool_slots: Arc::new(Semaphore::new(MAX_TOOL_CALLS)),
                 request_slots: Arc::new(Semaphore::new(MAX_UPSTREAM_REQUESTS)),
                 rate_limit: RateLimit::new(),
@@ -346,7 +350,23 @@ pub struct TinesToolCall {
 }
 
 impl TinesToolCall {
+    pub fn has_project_exclusions(&self) -> bool {
+        !self.inner.excluded_project_ids.is_empty()
+    }
+
     pub async fn get_json(&self, route: Route<'_>, query: &Query) -> Result<Value, TinesError> {
+        self.get_json_with_status(route, query)
+            .await
+            .map(|(value, _)| value)
+    }
+
+    /// Fetches one JSON response and keeps its successful HTTP status so later
+    /// schema validation can report the upstream response that was inspected.
+    pub async fn get_json_with_status(
+        &self,
+        route: Route<'_>,
+        query: &Query,
+    ) -> Result<(Value, u16), TinesError> {
         let request_permit = self
             .inner
             .request_slots
@@ -415,10 +435,11 @@ impl TinesToolCall {
                         },
                         BodyReadError::Transport => TinesError::Transport { diagnostic_id },
                     })?;
-                serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
+                let value = serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
                     status: status.as_u16(),
                     diagnostic_id,
-                })
+                })?;
+                Ok((value, status.as_u16()))
             } else {
                 let body = read_bounded_body(response, MAX_ERROR_BODY_BYTES).await;
                 Err(decode_upstream_error(
@@ -453,6 +474,26 @@ impl TinesToolCall {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(issue_id, issue);
+    }
+
+    pub fn is_project_excluded(&self, project_id: &str) -> bool {
+        self.inner.excluded_project_ids.contains(project_id)
+    }
+
+    pub fn browser_link(&self, path_segments: &[&str]) -> Result<String, TinesError> {
+        let mut url = self.inner.web_url.clone();
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| TinesError::InvalidRoute)?;
+            segments.pop_if_empty();
+            for segment in path_segments {
+                push_dynamic_segment(&mut segments, segment)?;
+            }
+        }
+        url.set_query(None);
+        url.set_fragment(None);
+        Ok(url.into())
     }
 }
 
@@ -665,6 +706,12 @@ pub enum TinesError {
     Visibility {
         resource: &'static str,
     },
+    NotConfigured,
+    Schema {
+        status: Option<u16>,
+        code: &'static str,
+        message: &'static str,
+    },
     Cancelled,
     Timeout,
     Transport {
@@ -729,6 +776,26 @@ impl TinesError {
                 "resource_unavailable".to_owned(),
                 format!("{resource} is missing or inaccessible."),
                 None,
+                None,
+                None,
+            ),
+            Self::NotConfigured => (
+                "configuration",
+                "tines_not_configured".to_owned(),
+                "Tines API settings are not configured for this server.".to_owned(),
+                None,
+                None,
+                None,
+            ),
+            Self::Schema {
+                status,
+                code,
+                message,
+            } => (
+                "schema",
+                (*code).to_owned(),
+                (*message).to_owned(),
+                *status,
                 None,
                 None,
             ),

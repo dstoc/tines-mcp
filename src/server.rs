@@ -9,38 +9,23 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use rmcp::{
-    ServerHandler,
-    model::{Implementation, ServerCapabilities, ServerConfig},
-    transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-    },
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::read_tools::ReadTools;
 use crate::tines::TinesClient;
 
 const MAX_MCP_REQUEST_BYTES: usize = 64 * 1024;
-
-#[derive(Clone)]
-struct BootstrapServer {
-    _tines: Option<TinesClient>,
-}
-
-impl ServerHandler for BootstrapServer {
-    fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("tines-mcp", env!("CARGO_PKG_VERSION")))
-    }
-}
 
 pub fn router(config: &Config, cancellation_token: CancellationToken) -> Router {
     router_with_client(config, None, cancellation_token)
 }
 
-fn router_with_client(
+pub fn router_with_client(
     config: &Config,
     tines: Option<TinesClient>,
     cancellation_token: CancellationToken,
@@ -53,11 +38,7 @@ fn router_with_client(
         .enforce_origin_validation()
         .with_cancellation_token(cancellation_token);
     let mcp = StreamableHttpService::new(
-        move || {
-            Ok(BootstrapServer {
-                _tines: tines.clone(),
-            })
-        },
+        move || Ok(ReadTools::new(tines.clone())),
         LocalSessionManager::default().into(),
         server_config,
     );
