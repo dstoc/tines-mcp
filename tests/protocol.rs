@@ -1,19 +1,27 @@
-use std::future::Future;
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode, header},
+    response::Response,
     routing::get,
 };
 use http_body_util::BodyExt;
 use rmcp::{
-    ServerHandler,
+    ServerHandler, ServiceExt as McpServiceExt,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
-        ServerCapabilities, ServerConfig,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
+        Implementation, ProtocolVersion, ServerCapabilities, ServerConfig,
     },
     service::{RequestContext, RoleServer},
+    transport::StreamableHttpClientTransport,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     },
@@ -234,6 +242,284 @@ async fn sdk_falls_back_to_legacy_initialization_for_the_2026_revision() {
 }
 
 #[tokio::test]
+async fn unsupported_http_methods_versions_and_jsonrpc_methods_are_rejected() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mcp")
+                .header("Host", "localhost")
+                .header("Accept", "text/event-stream")
+                .body(Body::empty())
+                .expect("GET request should build"),
+        )
+        .await
+        .expect("in-process HTTP request should succeed");
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
+
+    let unsupported_version = json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/list",
+        "params": {}
+    })
+    .to_string();
+    let response = post_fixture(app(), "2030-01-01", "", &unsupported_version).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = response
+        .into_body()
+        .collect()
+        .await
+        .expect("version error body should be readable")
+        .to_bytes();
+    assert!(
+        String::from_utf8_lossy(&error).contains("Unsupported MCP-Protocol-Version"),
+        "unexpected unsupported-version response: {}",
+        String::from_utf8_lossy(&error)
+    );
+
+    let unsupported_method = json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "test/not-supported",
+        "params": {}
+    })
+    .to_string();
+    let response = post_fixture(app(), "2025-11-25", "", &unsupported_method).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], -32601, "unexpected response: {body}");
+}
+
+#[tokio::test]
+async fn successful_tool_call_is_returned_through_the_http_protocol() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock Tines listener should bind");
+    let upstream_address = upstream_listener
+        .local_addr()
+        .expect("mock Tines listener should have an address");
+    let upstream_app = Router::new().route(
+        "/api/v1/projects",
+        get(|| async {
+            axum::http::Response::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "items": [{"id": "project-1", "name": "Protocol fixture"}],
+                        "next_cursor": null
+                    })
+                    .to_string(),
+                ))
+                .expect("mock upstream response should build")
+        }),
+    );
+    let upstream_task = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("mock upstream should remain available");
+    });
+
+    let values = [
+        ("TINES_BASE_URL", format!("http://{upstream_address}")),
+        ("TINES_API_TOKEN", "local-test-token".to_owned()),
+        ("TINES_ALLOW_HTTP", "true".to_owned()),
+    ];
+    let config = Config::from_lookup(|name| {
+        values
+            .iter()
+            .find_map(|(key, value)| (*key == name).then(|| value.clone()))
+    })
+    .expect("mock Tines config should validate");
+    let client =
+        TinesClient::new(config.tines.as_ref().unwrap()).expect("test Tines client should build");
+    let app = server::router_with_client(&config, Some(client), CancellationToken::new());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("Host", "localhost")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {"name": "list_projects", "arguments": {}}
+            })
+            .to_string(),
+        ))
+        .expect("tool request should build");
+    let response = app
+        .oneshot(request)
+        .await
+        .expect("in-process HTTP request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["result"]["isError"], false);
+    assert_eq!(
+        body["result"]["structuredContent"]["data"]["items"],
+        json!([{"id": "project-1", "name": "Protocol fixture"}])
+    );
+    upstream_task.abort();
+}
+
+#[tokio::test]
+async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock Tines listener should bind");
+    let upstream_address = upstream_listener
+        .local_addr()
+        .expect("mock Tines listener should have an address");
+    let upstream_requests = Arc::new(AtomicUsize::new(0));
+    let handler_requests = Arc::clone(&upstream_requests);
+    let upstream_app = Router::new().route(
+        "/api/v1/projects",
+        get(move || {
+            let requests = Arc::clone(&handler_requests);
+            async move {
+                let request_index = requests.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = if request_index == 0 {
+                    (
+                        StatusCode::OK,
+                        json!({
+                            "items": [{"id": "project-sdk", "name": "SDK fixture"}],
+                            "next_cursor": null
+                        }),
+                    )
+                } else {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({
+                            "error": {
+                                "code": "fixture_unavailable",
+                                "message": "controlled upstream fixture failure"
+                            }
+                        }),
+                    )
+                };
+                Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("mock upstream response should build")
+            }
+        }),
+    );
+    let upstream_task = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("mock upstream should remain available");
+    });
+
+    let values = [
+        ("TINES_BASE_URL", format!("http://{upstream_address}")),
+        ("TINES_API_TOKEN", "local-test-token".to_owned()),
+        ("TINES_ALLOW_HTTP", "true".to_owned()),
+    ];
+    let config = Config::from_lookup(|name| {
+        values
+            .iter()
+            .find_map(|(key, value)| (*key == name).then(|| value.clone()))
+    })
+    .expect("mock Tines config should validate");
+    let tines =
+        TinesClient::new(config.tines.as_ref().unwrap()).expect("test Tines client should build");
+
+    let mcp_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("MCP listener should bind");
+    let mcp_address = mcp_listener
+        .local_addr()
+        .expect("MCP listener should have an address");
+    let cancellation = CancellationToken::new();
+    let app = server::router_with_client(&config, Some(tines), cancellation.clone());
+    let server_cancellation = cancellation.clone();
+    let server_task = tokio::spawn(async move {
+        axum::serve(mcp_listener, app)
+            .with_graceful_shutdown(server_cancellation.cancelled_owned())
+            .await
+            .expect("MCP server should stop cleanly");
+    });
+
+    let transport = StreamableHttpClientTransport::from_uri(format!("http://{mcp_address}/mcp"));
+    let client_config = ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("tines-mcp-sdk-test", "0.1.0"),
+    );
+    let client = client_config
+        .serve(transport)
+        .await
+        .expect("pinned SDK client should connect and negotiate");
+
+    let server_info = client
+        .peer()
+        .peer_info()
+        .expect("negotiation should expose server information");
+    assert_eq!(
+        server_info.protocol_version,
+        ProtocolVersion::LATEST_WITH_INITIALIZE
+    );
+
+    let tools = client
+        .list_all_tools()
+        .await
+        .expect("SDK client should discover tools");
+    assert_eq!(tools.len(), 19);
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "list_projects")
+    );
+    assert!(tools.iter().all(|tool| {
+        tool.annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint)
+            == Some(true)
+    }));
+
+    let success = client
+        .call_tool(CallToolRequestParams::new("list_projects").with_arguments(Default::default()))
+        .await
+        .expect("SDK client should receive a successful tool result");
+    assert_eq!(success.is_error, Some(false));
+    assert_eq!(
+        success.structured_content.as_ref().unwrap()["data"]["items"],
+        json!([{"id": "project-sdk", "name": "SDK fixture"}])
+    );
+
+    let failure = client
+        .call_tool(CallToolRequestParams::new("list_projects").with_arguments(Default::default()))
+        .await
+        .expect("upstream failure should be returned as a tool result");
+    assert_eq!(failure.is_error, Some(true));
+    assert_eq!(
+        failure.structured_content.as_ref().unwrap()["error"]["source"],
+        "upstream"
+    );
+    assert_eq!(
+        failure.structured_content.as_ref().unwrap()["error"]["code"],
+        "fixture_unavailable"
+    );
+    assert_eq!(
+        failure.structured_content.as_ref().unwrap()["error"]["status"],
+        503
+    );
+    assert_eq!(upstream_requests.load(Ordering::SeqCst), 2);
+
+    client
+        .cancel()
+        .await
+        .expect("SDK client should shut down cleanly");
+    cancellation.cancel();
+    server_task.await.expect("MCP server task should complete");
+    upstream_task.abort();
+}
+
+#[tokio::test]
 async fn health_is_liveness_only_and_server_cancels_cleanly_without_tines_config() {
     let response = app()
         .oneshot(
@@ -263,6 +549,66 @@ async fn health_is_liveness_only_and_server_cancels_cleanly_without_tines_config
         .expect("server should stop after cancellation")
         .expect("server task should complete")
         .expect("server should stop cleanly");
+}
+
+#[tokio::test]
+async fn stateless_http_discovery_reconnects_after_a_server_restart() {
+    let client = reqwest::Client::new();
+    let start_server = async || {
+        let config = Config::from_lookup(|_| None).expect("default config should be valid");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("server listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("server listener should have an address");
+        let cancellation = CancellationToken::new();
+        let server_cancellation = cancellation.clone();
+        let task =
+            tokio::spawn(async move { server::run(listener, &config, server_cancellation).await });
+        (format!("http://{address}/mcp"), cancellation, task)
+    };
+
+    let (first_url, first_cancellation, first_task) = start_server().await;
+    let first_response = client
+        .post(&first_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "server/discover")
+        .body(DISCOVER_2026)
+        .send()
+        .await
+        .expect("first server should accept discovery");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert!(first_response.headers().get("Mcp-Session-Id").is_none());
+    first_cancellation.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), first_task)
+        .await
+        .expect("first server should stop after cancellation")
+        .expect("first server task should complete")
+        .expect("first server should stop cleanly");
+    assert!(client.post(&first_url).send().await.is_err());
+
+    let (second_url, second_cancellation, second_task) = start_server().await;
+    let second_response = client
+        .post(&second_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "server/discover")
+        .body(DISCOVER_2026)
+        .send()
+        .await
+        .expect("restarted server should accept discovery");
+    assert_eq!(second_response.status(), StatusCode::OK);
+    assert!(second_response.headers().get("Mcp-Session-Id").is_none());
+    second_cancellation.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), second_task)
+        .await
+        .expect("restarted server should stop after cancellation")
+        .expect("restarted server task should complete")
+        .expect("restarted server should stop cleanly");
 }
 
 #[tokio::test]
