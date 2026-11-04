@@ -98,7 +98,7 @@ impl ReadTools {
             .with_raw_output_schema(output_schema.clone()),
             Tool::new(
                 "get_issue",
-                "Read one issue by issue_id, or by project_id and positive per-project number. Use issue_id when available; transferred issues are checked against their current project.",
+                "Read one issue by issue_id, or by project_id and positive per-project number. Use issue_id when available; transferred issues retain their current project attribution.",
                 Arc::new(get_issue_schema),
             )
             .with_annotations(annotations())
@@ -237,9 +237,6 @@ impl ReadTools {
             }
             let (mut data, status) = call.get_json_with_status(Route::Projects, &query).await?;
             let items = collection_items_mut(&mut data, status, "projects")?;
-            if call.has_project_exclusions() {
-                retain_visible_project_items(items, &call, status)?;
-            }
             let links = items
                 .iter()
                 .filter_map(|item| {
@@ -263,7 +260,6 @@ impl ReadTools {
             return validation("project_id", "must be a non-empty project ID");
         }
         self.execute(cancellation, move |call| async move {
-            reject_excluded(&call, &args.project_id, "project")?;
             let (data, status) = call
                 .get_json_with_status(
                     Route::Project {
@@ -279,7 +275,6 @@ impl ReadTools {
                     "Tines returned a different project than requested.",
                 ));
             }
-            reject_excluded(&call, id, "project")?;
             let links = project_link(&call, id, data.get("name").and_then(Value::as_str))
                 .into_iter()
                 .collect();
@@ -316,9 +311,6 @@ impl ReadTools {
         }
 
         self.execute(cancellation, move |call| async move {
-            if let Some(project_id) = args.project_id.as_deref() {
-                reject_excluded(&call, project_id, "project")?;
-            }
             let mut query = Query::new();
             if let Some(project_id) = args.project_id.as_deref() {
                 query.append("project", project_id);
@@ -353,9 +345,6 @@ impl ReadTools {
 
             let (mut data, status) = call.get_json_with_status(Route::Issues, &query).await?;
             let items = collection_items_mut(&mut data, status, "issues")?;
-            if call.has_project_exclusions() {
-                retain_visible_issue_items(items, &call, status)?;
-            }
             let links = items
                 .iter()
                 .filter_map(|item| {
@@ -421,7 +410,6 @@ impl ReadTools {
                     (data, status)
                 }
                 IssueLookup::ProjectNumber { project_id, number } => {
-                    reject_excluded(&call, &project_id, "project")?;
                     call.get_json_with_status(
                         Route::ProjectIssue {
                             project_id: &project_id,
@@ -433,7 +421,6 @@ impl ReadTools {
                 }
             };
             let current_project_id = issue_project_id(&data, status)?;
-            reject_excluded(&call, current_project_id, "issue")?;
             let number = data.get("number").and_then(Value::as_u64);
             let project_name = data
                 .get("project_name")
@@ -751,7 +738,6 @@ impl ReadTools {
         self.execute(cancellation, move |call| async move {
             let mut query = Query::new();
             if let Some(project_id) = args.project_id.as_deref() {
-                reject_excluded(&call, project_id, "project")?;
                 query.append("project", project_id);
             }
             let (mut data, status) = call.get_json_with_status(Route::Workflows, &query).await?;
@@ -879,14 +865,9 @@ impl ReadTools {
         self.execute(cancellation, move |call| async move {
             let mut query = Query::new();
             if let Some(project_id) = args.project_id.as_deref() {
-                reject_excluded(&call, project_id, "project")?;
                 query.append("project", project_id);
             }
             if let Some(issue_id) = args.issue_id.as_deref() {
-                if call.has_project_exclusions() {
-                    let project_id = resolve_issue_project_id(&call, issue_id).await?;
-                    reject_excluded(&call, &project_id, "issue")?;
-                }
                 query.append("issue", issue_id);
             }
             if !args.event_types.is_empty() {
@@ -905,10 +886,7 @@ impl ReadTools {
             append_optional(&mut query, "cursor", args.cursor.as_deref());
 
             let (mut data, status) = call.get_json_with_status(Route::Events, &query).await?;
-            let items = collection_items_mut(&mut data, status, "events")?;
-            if call.has_project_exclusions() {
-                retain_visible_event_items(items, &call, status).await?;
-            }
+            collection_items_mut(&mut data, status, "events")?;
             let next_cursor = required_cursor(&data, status)?;
             if args
                 .cursor
@@ -959,16 +937,6 @@ impl ReadTools {
         }
 
         self.execute(cancellation, move |call| async move {
-            if let Some(project_id) = args.project_id.as_deref() {
-                reject_excluded(&call, project_id, "project")?;
-            }
-            if let Some(issue_id) = args.issue_id.as_deref()
-                && call.has_project_exclusions()
-            {
-                let project_id = resolve_issue_project_id(&call, issue_id).await?;
-                reject_excluded(&call, &project_id, "context")?;
-            }
-
             let mut query = Query::new();
             append_optional(&mut query, "project", args.project_id.as_deref());
             append_optional(&mut query, "state", args.state_id.as_deref());
@@ -992,10 +960,7 @@ impl ReadTools {
             append_optional(&mut query, "cursor", args.cursor.as_deref());
 
             let (mut data, status) = call.get_json_with_status(Route::Context, &query).await?;
-            let items = collection_items_mut(&mut data, status, "context")?;
-            if call.has_project_exclusions() {
-                retain_visible_context_items(items, &call, status).await?;
-            }
+            collection_items_mut(&mut data, status, "context")?;
             let next_cursor = required_cursor(&data, status)?;
             if args
                 .cursor
@@ -1043,9 +1008,6 @@ impl ReadTools {
                     "Tines returned a different context item than requested.",
                 ));
             }
-            if call.has_project_exclusions() {
-                ensure_visible_context_item(&data, &call, status).await?;
-            }
             Ok(ReadData::new(data))
         })
         .await
@@ -1060,10 +1022,6 @@ impl ReadTools {
             return validation("issue_id", "must be a non-empty issue ID");
         }
         self.execute(cancellation, move |call| async move {
-            if call.has_project_exclusions() {
-                let project_id = resolve_issue_project_id(&call, &args.issue_id).await?;
-                reject_excluded(&call, &project_id, "issue")?;
-            }
             let (data, status) = call
                 .get_json_with_status(
                     Route::IssueContext {
@@ -1087,10 +1045,6 @@ impl ReadTools {
             return validation("issue_id", "must be a non-empty issue ID");
         }
         self.execute(cancellation, move |call| async move {
-            if call.has_project_exclusions() {
-                let project_id = resolve_issue_project_id(&call, &args.issue_id).await?;
-                reject_excluded(&call, &project_id, "issue")?;
-            }
             let (data, status) = call
                 .get_json_with_status(
                     Route::IssueJournal {
@@ -1148,16 +1102,6 @@ impl ReadTools {
         }
 
         self.execute(cancellation, move |call| async move {
-            if let Some(project_id) = args.project_id.as_deref() {
-                reject_excluded(&call, project_id, "run")?;
-            }
-            if let Some(issue_id) = args.issue_id.as_deref()
-                && call.has_project_exclusions()
-            {
-                let project_id = resolve_issue_project_id(&call, issue_id).await?;
-                reject_excluded(&call, &project_id, "run")?;
-            }
-
             let mut query = Query::new();
             append_optional(&mut query, "issue", args.issue_id.as_deref());
             append_optional(&mut query, "project", args.project_id.as_deref());
@@ -1174,9 +1118,7 @@ impl ReadTools {
 
             let (mut data, status) = call.get_json_with_status(Route::Runs, &query).await?;
             let items = collection_items_mut(&mut data, status, "runs")?;
-            let links = if call.has_project_exclusions() {
-                retain_visible_run_items(items, &call, status).await?
-            } else if let Some(project_id) = args.project_id.as_deref() {
+            let links = if let Some(project_id) = args.project_id.as_deref() {
                 run_links_for_project(items, &call, project_id)
             } else {
                 Vec::new()
@@ -1209,7 +1151,7 @@ impl ReadTools {
         self.execute(cancellation, move |call| async move {
             let (data, status) = get_run_detail(&call, &args.run_id).await?;
             let issue_id = run_issue_id(&data, status)?;
-            let link = run_issue_link(&call, issue_id, "run").await?;
+            let link = run_issue_link(&call, issue_id).await?;
             Ok(ReadData::new(data).with_links(link.into_iter().collect()))
         })
         .await
@@ -1249,7 +1191,7 @@ impl ReadTools {
             .run_tool(cancellation, move |call| async move {
                 let (detail, detail_status) = get_run_detail(&call, &args.run_id).await?;
                 let issue_id = run_issue_id(&detail, detail_status)?;
-                let issue_link = run_issue_link(&call, issue_id, "run log").await?;
+                let issue_link = run_issue_link(&call, issue_id).await?;
                 let log_metadata = run_log_metadata(&detail, detail_status)?;
                 let (bytes, status, mime_type, mode) = match args.mode {
                     RunLogMode::Tail => {
@@ -1349,7 +1291,7 @@ impl ReadTools {
             return validation("issue_id", "must be a non-empty immutable ID");
         }
         self.execute(cancellation, move |call| async move {
-            let issue_link = run_issue_link(&call, &args.issue_id, "dispatch").await?;
+            let issue_link = run_issue_link(&call, &args.issue_id).await?;
             let (data, status) = call
                 .get_json_with_status(
                     Route::IssueDispatch {
@@ -2047,72 +1989,6 @@ fn normalize_unpaginated_cursor(data: &mut Value, status: u16) -> Result<(), Tin
     }
 }
 
-async fn retain_visible_event_items(
-    items: &mut Vec<Value>,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<(), TinesError> {
-    let mut visible = Vec::with_capacity(items.len());
-    for item in items.drain(..) {
-        let recorded_project = optional_attribution_id(&item, "project_id", status)?;
-        let issue_id = optional_attribution_id(&item, "issue_id", status)?;
-        if recorded_project.is_some_and(|id| call.is_project_excluded(id)) {
-            continue;
-        }
-
-        let current_project = if let Some(issue_id) = issue_id {
-            match event_issue_project_id(&item, status)? {
-                Some(project_id) => Some(project_id.to_owned()),
-                None => Some(resolve_issue_project_id(call, issue_id).await?),
-            }
-        } else {
-            None
-        };
-        if current_project
-            .as_deref()
-            .is_some_and(|id| call.is_project_excluded(id))
-        {
-            continue;
-        }
-        visible.push(item);
-    }
-    *items = visible;
-    Ok(())
-}
-
-fn optional_attribution_id<'a>(
-    event: &'a Value,
-    field: &'static str,
-    status: u16,
-) -> Result<Option<&'a str>, TinesError> {
-    match event.get(field) {
-        Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value)),
-        _ => Err(schema_error(
-            status,
-            "Tines event response was missing valid project and issue attribution fields.",
-        )),
-    }
-}
-
-fn event_issue_project_id(event: &Value, status: u16) -> Result<Option<&str>, TinesError> {
-    match event.get("issue_ref") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(issue_ref)) => match issue_ref.get("project_id") {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(project_id)) if !project_id.is_empty() => Ok(Some(project_id)),
-            _ => Err(schema_error(
-                status,
-                "Tines event issue reference had an invalid current project ID.",
-            )),
-        },
-        _ => Err(schema_error(
-            status,
-            "Tines event issue reference was neither an object nor null.",
-        )),
-    }
-}
-
 fn required_cursor(data: &Value, status: u16) -> Result<Option<&str>, TinesError> {
     match data.get("next_cursor") {
         Some(Value::Null) => Ok(None),
@@ -2121,50 +1997,6 @@ fn required_cursor(data: &Value, status: u16) -> Result<Option<&str>, TinesError
             status,
             "Tines paginated response was missing a valid next_cursor field.",
         )),
-    }
-}
-
-fn retain_visible_project_items(
-    items: &mut Vec<Value>,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<(), TinesError> {
-    let mut visible = Vec::with_capacity(items.len());
-    for item in items.drain(..) {
-        let project_id = required_string(&item, "id", status, "project")?;
-        if !call.is_project_excluded(project_id) {
-            visible.push(item);
-        }
-    }
-    *items = visible;
-    Ok(())
-}
-
-fn retain_visible_issue_items(
-    items: &mut Vec<Value>,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<(), TinesError> {
-    let mut visible = Vec::with_capacity(items.len());
-    for item in items.drain(..) {
-        let project_id = required_string(&item, "project_id", status, "issue")?;
-        if !call.is_project_excluded(project_id) {
-            visible.push(item);
-        }
-    }
-    *items = visible;
-    Ok(())
-}
-
-fn reject_excluded(
-    call: &TinesToolCall,
-    project_id: &str,
-    resource: &'static str,
-) -> Result<(), TinesError> {
-    if call.is_project_excluded(project_id) {
-        Err(TinesError::Visibility { resource })
-    } else {
-        Ok(())
     }
 }
 
@@ -2242,15 +2074,10 @@ async fn artifact_issue_link(
             "Tines returned a different issue than requested.",
         ));
     }
-    let has_exclusions = call.has_project_exclusions();
     let project_id = match issue_project_id(&issue, status) {
         Ok(project_id) => project_id,
-        Err(_) if !has_exclusions => return Ok(None),
-        Err(error) => return Err(error),
+        Err(_) => return Ok(None),
     };
-    if has_exclusions {
-        reject_excluded(call, project_id, "artifact")?;
-    }
     let number = issue.get("number").and_then(Value::as_u64);
     let project_name = issue
         .get("project_name")
@@ -2375,82 +2202,6 @@ fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-async fn resolve_issue_project_id(
-    call: &TinesToolCall,
-    issue_id: &str,
-) -> Result<String, TinesError> {
-    let (issue, status) = parent_issue(call, issue_id).await?;
-    Ok(issue_project_id(&issue, status)?.to_owned())
-}
-
-async fn retain_visible_context_items(
-    items: &mut Vec<Value>,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<(), TinesError> {
-    let mut visible = Vec::with_capacity(items.len());
-    for item in std::mem::take(items) {
-        if context_item_is_visible(&item, call, status).await? {
-            visible.push(item);
-        }
-    }
-    *items = visible;
-    Ok(())
-}
-
-async fn ensure_visible_context_item(
-    item: &Value,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<(), TinesError> {
-    if context_item_is_visible(item, call, status).await? {
-        Ok(())
-    } else {
-        Err(TinesError::Visibility {
-            resource: "context",
-        })
-    }
-}
-
-async fn context_item_is_visible(
-    item: &Value,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<bool, TinesError> {
-    let scope = item
-        .get("scope")
-        .and_then(Value::as_object)
-        .ok_or_else(|| schema_error(status, "Tines context item was missing its scope object."))?;
-    let project_id = optional_scope_id(scope, "project_id", status)?;
-    let issue_id = optional_scope_id(scope, "issue_id", status)?;
-
-    if project_id.is_some_and(|id| call.is_project_excluded(id)) {
-        return Ok(false);
-    }
-    if let Some(issue_id) = issue_id {
-        let current_project_id = resolve_issue_project_id(call, issue_id).await?;
-        if call.is_project_excluded(&current_project_id) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn optional_scope_id<'a>(
-    scope: &'a Map<String, Value>,
-    field: &'static str,
-    status: u16,
-) -> Result<Option<&'a str>, TinesError> {
-    match scope.get(field) {
-        Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value)),
-        _ => Err(schema_error(
-            status,
-            "Tines context scope was missing or malformed an ownership field.",
-        )),
-    }
-}
-
 fn require_object(data: &Value, status: u16, resource: &'static str) -> Result<(), TinesError> {
     if data.is_object() {
         Ok(())
@@ -2547,23 +2298,16 @@ fn required_u64(
     })
 }
 
-async fn run_issue_link(
-    call: &TinesToolCall,
-    issue_id: &str,
-    resource: &'static str,
-) -> Result<Option<Value>, TinesError> {
+async fn run_issue_link(call: &TinesToolCall, issue_id: &str) -> Result<Option<Value>, TinesError> {
     let (issue, status) = match parent_issue(call, issue_id).await {
         Ok(issue) => issue,
         Err(error @ (TinesError::Cancelled | TinesError::Timeout)) => return Err(error),
-        Err(_) if !call.has_project_exclusions() => return Ok(None),
-        Err(error) => return Err(error),
+        Err(_) => return Ok(None),
     };
     let project_id = match issue_project_id(&issue, status) {
         Ok(project_id) => project_id,
-        Err(_) if !call.has_project_exclusions() => return Ok(None),
-        Err(error) => return Err(error),
+        Err(_) => return Ok(None),
     };
-    reject_excluded(call, project_id, resource)?;
     let number = issue.get("number").and_then(Value::as_u64);
     let project_name = issue
         .get("project_name")
@@ -2573,55 +2317,17 @@ async fn run_issue_link(
 }
 
 async fn parent_issue(call: &TinesToolCall, issue_id: &str) -> Result<(Value, u16), TinesError> {
-    let cached = call.cached_parent_issue(issue_id);
-    let (issue, status) = match cached {
-        Some(issue) => (issue, 200),
-        None => {
-            call.get_json_with_status(Route::Issue { issue_id }, &Query::new())
-                .await?
-        }
-    };
+    let (issue, status) = call
+        .get_json_with_status(Route::Issue { issue_id }, &Query::new())
+        .await?;
     let returned_id = required_string(&issue, "id", status, "issue_id")?;
     if returned_id != issue_id {
         return Err(schema_error(
             status,
-            "Tines returned a different issue during ownership resolution.",
+            "Tines returned a different issue during parent lookup.",
         ));
     }
-    if call.cached_parent_issue(issue_id).is_none() {
-        call.remember_parent_issue(issue_id.to_owned(), issue.clone());
-    }
     Ok((issue, status))
-}
-
-async fn retain_visible_run_items(
-    items: &mut Vec<Value>,
-    call: &TinesToolCall,
-    status: u16,
-) -> Result<Vec<Value>, TinesError> {
-    let mut visible = Vec::with_capacity(items.len());
-    let mut links = Vec::new();
-    for item in std::mem::take(items) {
-        let issue_id = run_issue_id(&item, status)?;
-        let (issue, issue_status) = parent_issue(call, issue_id).await?;
-        let project_id = issue_project_id(&issue, issue_status)?;
-        if call.is_project_excluded(project_id) {
-            continue;
-        }
-        let number = issue.get("number").and_then(Value::as_u64);
-        let project_name = issue
-            .get("project_name")
-            .and_then(Value::as_str)
-            .or_else(|| issue.pointer("/project/name").and_then(Value::as_str));
-        if let Some(link) =
-            number.and_then(|number| issue_link(call, project_id, number, project_name))
-        {
-            links.push(link);
-        }
-        visible.push(item);
-    }
-    *items = visible;
-    Ok(links)
 }
 
 fn run_links_for_project(items: &[Value], call: &TinesToolCall, project_id: &str) -> Vec<Value> {

@@ -17,9 +17,9 @@ The service provides nineteen read-only tools:
 - **get_issue_journal** for the applicable guidance journal and its anchor
 - **list_runs**, **get_run**, **get_run_log**, and **explain_dispatch** for run history, logs, and dispatch explanations
 
-**get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response includes the current project, so a moved issue is checked against its current project.
+**get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response preserves the current project attribution after an issue moves.
 
-**list_issues** uses the global issue list and returns one native page. It omits descriptions by default. Set **descriptions=true** to include them. Continue only when **next_cursor** is not null, and keep the same filters on the next call. An empty page can still have a cursor when excluded projects accounted for every item on that page.
+**list_issues** uses the global issue list and returns one native page. It omits descriptions by default. Set **descriptions=true** to include them. Continue only when **next_cursor** is not null, and keep the same filters on the next call. An upstream empty page can still have a continuation cursor.
 
 Issue filters include project ID, workflow, state, category, schedule, labels, search, readiness, done-state visibility, duplicate visibility, and archived-project visibility. Project and issue reads preserve the owner or shared-member response shape returned by Tines.
 
@@ -27,7 +27,7 @@ Artifact metadata and content use separate tools. **list_issue_artifacts** lists
 
 **list_context** supports project, state, label, issue, kind, search, exact-scope, archive, and pagination filters. It returns raw items. **get_issue_context** returns Tines' assembled effective context; **get_issue_journal** resolves guidance for the issue and does not return chronological activity.
 
-**list_events** reads one page of existing activity on demand. It accepts project and issue IDs, an open list of event type strings, a workflow state ID, an inclusive **since** bound, an exclusive **until** bound, and the native cursor. Bounds can be epoch milliseconds or ISO 8601 timestamps. Keep the filters unchanged when continuing. Activity traversal is live rather than transactional, and its cursor is not a durable replay checkpoint. An empty page can still have a cursor when excluded projects accounted for every event on that page.
+**list_events** reads one page of existing activity on demand. It accepts project and issue IDs, an open list of event type strings, a workflow state ID, an inclusive **since** bound, an exclusive **until** bound, and the native cursor. Bounds can be epoch milliseconds or ISO 8601 timestamps. Keep the filters unchanged when continuing. Activity traversal is live rather than transactional, and its cursor is not a durable replay checkpoint. An upstream empty page can still have a continuation cursor.
 
 ### Runs, logs, and dispatch
 
@@ -55,7 +55,7 @@ curl -i http://127.0.0.1:8080/healthz
 
 The health endpoint returns `204 No Content`. It does not contact Tines or validate an upstream token.
 
-The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. Read-only access can still reveal sensitive data.
+The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. Read-only access can still reveal sensitive data. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
 
 The default Host allowlist permits loopback hosts. Browser requests with an `Origin` header are rejected unless that exact origin is configured. Host and Origin checks limit unintended requests, but they are not authentication.
 
@@ -99,9 +99,10 @@ The process handles `SIGTERM` and stops accepting requests gracefully. The examp
 | `TINES_BASE_URL` | Unset | Tines origin. HTTPS is required except for an explicitly enabled loopback HTTP origin. Required when any Tines setting is supplied. |
 | `TINES_API_TOKEN_FILE` | Unset | Path to a readable, non-empty token file. Set exactly one token source. |
 | `TINES_API_TOKEN` | Unset | Token from the environment. Set exactly one token source. |
-| `TINES_EXCLUDED_PROJECT_IDS` | Empty | Comma-separated immutable project IDs to exclude. |
 | `TINES_WEB_URL` | `TINES_BASE_URL` | Optional HTTPS origin for browser links. |
 | `TINES_ALLOW_HTTP` | `false` | Allows an HTTP Tines origin only when it resolves to loopback. |
+
+Remove `TINES_EXCLUDED_PROJECT_IDS` from existing deployments. This setting is no longer read and has no effect. Configure project restrictions on the Tines token before upgrading if the deployment relied on adapter exclusions.
 
 Tines settings are validated at startup. The service rejects malformed addresses, origins, token-source combinations, and non-loopback HTTP upstream URLs.
 

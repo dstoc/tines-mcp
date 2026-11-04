@@ -16,7 +16,6 @@ pub struct Config {
 pub struct TinesConfig {
     pub(crate) base_url: Url,
     pub(crate) web_url: Url,
-    pub(crate) excluded_project_ids: Vec<String>,
     pub(crate) token_source: TokenSource,
     pub(crate) api_token: Secret,
 }
@@ -47,10 +46,6 @@ impl TinesConfig {
 
     pub fn web_url(&self) -> &Url {
         &self.web_url
-    }
-
-    pub fn excluded_project_ids(&self) -> &[String] {
-        &self.excluded_project_ids
     }
 
     pub fn token_source(&self) -> &TokenSource {
@@ -125,28 +120,10 @@ impl Config {
         let token_env = get("TINES_API_TOKEN").filter(|value| !value.trim().is_empty());
         let token_file = get("TINES_API_TOKEN_FILE").filter(|value| !value.trim().is_empty());
         let web_url_raw = get("TINES_WEB_URL").filter(|value| !value.trim().is_empty());
-        let excluded_project_ids = get("TINES_EXCLUDED_PROJECT_IDS")
-            .map(|value| parse_csv(&value))
-            .unwrap_or_default();
-
-        for id in &excluded_project_ids {
-            if id.is_empty()
-                || !id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            {
-                return Err(ConfigError {
-                    variable: "TINES_EXCLUDED_PROJECT_IDS",
-                    reason: "project IDs may contain only ASCII letters, digits, '_' and '-'",
-                });
-            }
-        }
-
         let has_tines_settings = base_url_raw.is_some()
             || token_env.is_some()
             || token_file.is_some()
-            || web_url_raw.is_some()
-            || !excluded_project_ids.is_empty();
+            || web_url_raw.is_some();
 
         let tines = if has_tines_settings {
             let base_url_raw = base_url_raw.ok_or(ConfigError {
@@ -190,7 +167,6 @@ impl Config {
             Some(TinesConfig {
                 base_url,
                 web_url,
-                excluded_project_ids,
                 token_source,
                 api_token,
             })
@@ -358,11 +334,26 @@ mod tests {
     }
 
     #[test]
+    fn removed_project_policy_setting_is_never_read() {
+        for configured in [false, true] {
+            let config = Config::from_lookup(|name| {
+                assert_ne!(name, "TINES_EXCLUDED_PROJECT_IDS");
+                match (configured, name) {
+                    (true, "TINES_BASE_URL") => Some("https://tines.example".to_owned()),
+                    (true, "TINES_API_TOKEN") => Some("dummy".to_owned()),
+                    _ => None,
+                }
+            })
+            .expect("configuration no longer depends on project policy settings");
+            assert_eq!(config.tines.is_some(), configured);
+        }
+    }
+
+    #[test]
     fn validates_tines_url_and_keeps_environment_secret_out_of_config() {
         let config = config(&[
             ("TINES_BASE_URL", "https://tines.example"),
             ("TINES_API_TOKEN", "not-a-real-token"),
-            ("TINES_EXCLUDED_PROJECT_IDS", "prj_one, prj_two"),
         ])
         .expect("HTTPS origin and one token source should be valid");
         let tines = config
@@ -371,7 +362,6 @@ mod tests {
             .expect("Tines config should be present");
         assert_eq!(tines.base_url.as_str(), "https://tines.example/");
         assert_eq!(tines.web_url, tines.base_url);
-        assert_eq!(tines.excluded_project_ids, ["prj_one", "prj_two"]);
         assert_eq!(tines.token_source, TokenSource::Environment);
         assert!(!format!("{config:?}").contains("not-a-real-token"));
     }

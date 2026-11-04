@@ -147,15 +147,12 @@ async fn start_mock(body: Value) -> MockUpstream {
     }
 }
 
-fn configured_app(upstream: &MockUpstream, excluded: &[&str]) -> Router {
-    let mut values = vec![
+fn configured_app(upstream: &MockUpstream) -> Router {
+    let values = [
         ("TINES_BASE_URL", upstream.base_url.clone()),
         ("TINES_API_TOKEN", "local-test-token".to_owned()),
         ("TINES_ALLOW_HTTP", "true".to_owned()),
     ];
-    if !excluded.is_empty() {
-        values.push(("TINES_EXCLUDED_PROJECT_IDS", excluded.join(",")));
-    }
     let config = Config::from_lookup(|name| {
         values
             .iter()
@@ -499,7 +496,7 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
 #[tokio::test]
 async fn artifact_metadata_is_separate_and_ordinary_issue_reads_do_not_expand_artifacts() {
     let upstream = start_mock(json!({})).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let detail = artifact_detail(
         "artifact-1",
         "issue-a",
@@ -561,30 +558,6 @@ async fn artifact_metadata_is_separate_and_ordinary_issue_reads_do_not_expand_ar
 }
 
 #[tokio::test]
-async fn artifact_reads_check_the_current_issue_project_before_expansion() {
-    let upstream = start_mock(json!({})).await;
-    upstream.state.set_replies(
-        "/api/v1/issues/issue-hidden",
-        [MockReply::json(json!({
-            "id": "issue-hidden",
-            "project_id": "project-hidden",
-            "number": 9
-        }))],
-    );
-    let app = configured_app(&upstream, &["project-hidden"]);
-    let result = call_tool(
-        app,
-        "list_issue_artifacts",
-        json!({"issue_id": "issue-hidden"}),
-    )
-    .await;
-    assert_eq!(result["error"]["source"], "visibility");
-    assert_eq!(result["error"]["code"], "resource_unavailable");
-    assert_eq!(upstream.state.requests(), ["/api/v1/issues/issue-hidden"]);
-    upstream.task.abort();
-}
-
-#[tokio::test]
 async fn folder_content_uses_selected_version_and_path_and_keeps_utf8_chunks_on_boundaries() {
     let mut first_version = artifact_version(1, "application/octet-stream");
     first_version["files"] = json!([{
@@ -618,7 +591,7 @@ async fn folder_content_uses_selected_version_and_path_and_keeps_utf8_chunks_on_
             MockReply::bytes(content.clone(), "text/plain; charset=utf-8"),
         ],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let first = call_tool(
         app.clone(),
         "read_artifact_content",
@@ -705,7 +678,7 @@ async fn omitted_version_is_pinned_and_binary_chunks_are_base64_with_repeated_bo
             MockReply::bytes(bytes.clone(), "application/octet-stream"),
         ],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let first = call_tool(
         app.clone(),
         "read_artifact_content",
@@ -788,7 +761,7 @@ async fn deleted_and_recreated_artifact_fails_identity_recheck() {
         "/api/v1/issues/issue-recreated/artifacts/report/content",
         [MockReply::bytes("body", "text/plain")],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(
         app,
         "read_artifact_content",
@@ -829,7 +802,7 @@ async fn continuation_detects_changed_source_digest_and_rejects_missing_identity
             MockReply::bytes(changed, "application/octet-stream"),
         ],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let first = call_tool(
         app.clone(),
         "read_artifact_content",
@@ -856,7 +829,7 @@ async fn continuation_detects_changed_source_digest_and_rejects_missing_identity
 
     let upstream = start_mock(detail).await;
     set_issue_parent_replies(&upstream.state, "issue-changing", "project-a", 4, 1);
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     for args in [
         json!({"issue_id": "issue-changing", "name": "payload", "offset": 1, "expected_sha256": "0".repeat(64), "expected_artifact_id": "stable-artifact-id"}),
         json!({"issue_id": "issue-changing", "name": "payload", "version": 1, "offset": 1, "expected_sha256": "0".repeat(64)}),
@@ -906,7 +879,7 @@ async fn text_continuation_rejects_a_caller_offset_inside_a_utf8_code_point() {
         "/api/v1/issues/issue-utf8/artifacts/note/content",
         [MockReply::bytes(bytes.clone(), "text/plain")],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(
         app,
         "read_artifact_content",
@@ -953,7 +926,7 @@ async fn folder_content_requires_a_path_and_link_artifacts_remain_references() {
             json!({"error": {"code": "folder_path_required", "message": "Choose a file path"}}),
         )],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let missing_path = call_tool(
         app,
         "read_artifact_content",
@@ -978,7 +951,7 @@ async fn folder_content_requires_a_path_and_link_artifacts_remain_references() {
     let link = artifact_detail("link-id", "issue-link", "spec", "link", vec![version]);
     let upstream = start_mock(link).await;
     set_issue_parent_replies(&upstream.state, "issue-link", "project-a", 7, 1);
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(
         app,
         "get_issue_artifact",
@@ -1017,7 +990,7 @@ async fn artifact_content_source_over_one_mib_preserves_metadata_without_returni
             "application/octet-stream",
         )],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(
         app,
         "read_artifact_content",
@@ -1059,7 +1032,7 @@ async fn artifact_content_source_over_one_mib_preserves_metadata_without_returni
 #[tokio::test]
 async fn issue_lookup_rejects_partial_conflicting_and_nonpositive_aliases_without_upstream_reads() {
     let upstream = start_mock(json!({})).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     for args in [
         json!({}),
         json!({"project_id": "project-a"}),
@@ -1078,7 +1051,7 @@ async fn issue_lookup_rejects_partial_conflicting_and_nonpositive_aliases_withou
 #[tokio::test]
 async fn issue_descriptions_are_opt_in_and_disable_native_brief_mode() {
     let upstream = start_mock(json!({"items": [], "next_cursor": null})).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(app, "list_issues", json!({"descriptions": true})).await;
     assert_eq!(result["meta"]["omissions"], json!([]));
     assert_eq!(
@@ -1089,7 +1062,7 @@ async fn issue_descriptions_are_opt_in_and_disable_native_brief_mode() {
 }
 
 #[tokio::test]
-async fn issue_list_maps_filters_and_preserves_opaque_cursor_on_an_excluded_only_page() {
+async fn issue_list_maps_filters_and_preserves_all_rows_and_opaque_cursor() {
     let upstream = start_mock(json!({
         "items": [
             {
@@ -1102,17 +1075,17 @@ async fn issue_list_maps_filters_and_preserves_opaque_cursor_on_an_excluded_only
                 "effective_state": {"id": "state-1", "name": "Doing"}
             },
             {
-                "id": "issue-hidden",
-                "project_id": "project-hidden",
-                "project_name": "Hidden",
+                "id": "issue-member-record",
+                "project_id": "project-member",
+                "project_name": "Shared",
                 "number": 23,
-                "owner": {"id": "owner-2", "name": "Hidden"}
+                "owner": {"id": "owner-2", "name": "Shared"}
             }
         ],
         "next_cursor": "cursor+/=opaque"
     }))
     .await;
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
     let args = json!({
         "project_id": "project-visible",
         "workflow_id": "workflow-1",
@@ -1129,7 +1102,7 @@ async fn issue_list_maps_filters_and_preserves_opaque_cursor_on_an_excluded_only
         "cursor": "before+/=opaque"
     });
     let first = call_tool(app.clone(), "list_issues", args.clone()).await;
-    assert_eq!(first["data"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["data"]["items"].as_array().unwrap().len(), 2);
     assert_eq!(first["data"]["items"][0]["id"], "issue-visible");
     assert_eq!(
         first["data"]["next_cursor"], "cursor+/=opaque",
@@ -1143,7 +1116,7 @@ async fn issue_list_maps_filters_and_preserves_opaque_cursor_on_an_excluded_only
         first["meta"]["links"][0]["href"],
         format!("{}/issues/project-visible/22", upstream.base_url)
     );
-    assert_eq!(first["meta"]["links"].as_array().unwrap().len(), 1);
+    assert_eq!(first["meta"]["links"].as_array().unwrap().len(), 2);
     let request = upstream.state.requests().remove(0);
     assert!(request.starts_with("/api/v1/issues?"));
     let expected_query = [
@@ -1167,72 +1140,31 @@ async fn issue_list_maps_filters_and_preserves_opaque_cursor_on_an_excluded_only
     assert_eq!(decoded_query(&request), expected_query);
 
     upstream.state.set_body(json!({
-        "items": [{"id": "issue-hidden", "project_id": "project-hidden"}],
+        "items": [{"id": "issue-member-record", "project_id": "project-member"}],
         "next_cursor": "still+/=opaque"
     }));
     let second = call_tool(app, "list_issues", args).await;
-    assert_eq!(second["data"]["items"], json!([]));
+    assert_eq!(second["data"]["items"][0]["id"], "issue-member-record");
     assert_eq!(second["data"]["next_cursor"], "still+/=opaque");
     assert_eq!(upstream.state.requests().len(), 2);
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn project_exclusions_use_ids_for_direct_and_returned_issue_ownership() {
-    let upstream = start_mock(json!({
-        "id": "issue-moved",
-        "project_id": "project-hidden",
-        "number": 8,
-        "title": "Transferred issue"
-    }))
-    .await;
-    let app = configured_app(&upstream, &["project-hidden"]);
-
-    let direct_project = call_tool(
-        app.clone(),
-        "get_project",
-        json!({"project_id": "project-hidden"}),
-    )
-    .await;
-    assert_eq!(direct_project["error"]["source"], "visibility");
-    assert!(upstream.state.requests().is_empty());
-
-    let direct_alias = call_tool(
-        app.clone(),
-        "get_issue",
-        json!({"project_id": "project-hidden", "number": 8}),
-    )
-    .await;
-    assert_eq!(direct_alias["error"]["source"], "visibility");
-    assert!(upstream.state.requests().is_empty());
-
-    let moved_alias = call_tool(
-        app,
-        "get_issue",
-        json!({"project_id": "project-old", "number": 8}),
-    )
-    .await;
-    assert_eq!(moved_alias["error"]["source"], "visibility");
-    assert_eq!(upstream.state.requests().len(), 1);
-    assert_eq!(
-        upstream.state.requests()[0],
-        "/api/v1/projects/project-old/issues/8"
-    );
-    upstream.task.abort();
-}
-
-#[tokio::test]
-async fn exclusion_checks_fail_closed_when_a_list_row_has_no_immutable_project_id() {
+async fn issue_list_keeps_rows_with_redacted_project_attribution() {
     let upstream = start_mock(json!({
         "items": [{"id": "issue-with-redacted-owner"}],
         "next_cursor": "opaque-next"
     }))
     .await;
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
     let issue_page = call_tool(app, "list_issues", json!({})).await;
-    assert_eq!(issue_page["error"]["source"], "schema");
-    assert_eq!(issue_page["error"]["status"], 200);
-    assert!(issue_page["data"].is_null());
+    assert!(issue_page["error"].is_null());
+    assert_eq!(
+        issue_page["data"]["items"],
+        json!([{"id": "issue-with-redacted-owner"}])
+    );
+    assert_eq!(issue_page["data"]["next_cursor"], "opaque-next");
     assert_eq!(upstream.state.requests().len(), 1);
     upstream.task.abort();
 }
@@ -1249,7 +1181,7 @@ async fn owner_and_member_issue_projections_keep_native_missing_and_redacted_fie
         "active_run": null
     });
     let upstream = start_mock(owner.clone()).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let owner_result =
         call_tool(app.clone(), "get_issue", json!({"issue_id": "issue-owner"})).await;
     assert_eq!(owner_result["data"], owner);
@@ -1297,17 +1229,17 @@ async fn project_workflow_and_label_tools_use_one_native_request_and_keep_shapes
     let upstream = start_mock(json!({
         "items": [
             {"id": "project-visible", "name": "Owned project"},
-            {"id": "project-hidden", "name": "Member project", "owner": {"id": "owner"}}
+            {"id": "project-member", "name": "Member project", "owner": {"id": "owner"}}
         ],
         "next_cursor": null
     }))
     .await;
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let projects = call_tool(app.clone(), "list_projects", json!({"archived": "all"})).await;
     assert_eq!(
         projects["data"]["items"],
-        json!([{"id": "project-visible", "name": "Owned project"}])
+        json!([{"id": "project-visible", "name": "Owned project"}, {"id": "project-member", "name": "Member project", "owner": {"id": "owner"}}])
     );
     assert_eq!(
         projects["meta"]["links"][0]["href"],
@@ -1358,7 +1290,7 @@ async fn single_project_and_workflow_reads_map_ids_without_extra_requests() {
         "capabilities": {"read": true, "execute": false}
     }))
     .await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let project = call_tool(
         app.clone(),
         "get_project",
@@ -1395,7 +1327,7 @@ async fn single_project_and_workflow_reads_map_ids_without_extra_requests() {
 #[tokio::test]
 async fn event_list_maps_filters_time_bounds_and_open_type_strings() {
     let upstream = start_mock(json!({"items": [], "next_cursor": "next+/=opaque"})).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(
         app,
         "list_events",
@@ -1433,7 +1365,7 @@ async fn event_list_maps_filters_time_bounds_and_open_type_strings() {
 #[tokio::test]
 async fn event_list_rejects_an_empty_workflow_state_id() {
     let upstream = start_mock(json!({})).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(app, "list_events", json!({"state": "  "})).await;
 
@@ -1447,20 +1379,20 @@ async fn event_list_rejects_an_empty_workflow_state_id() {
 }
 
 #[tokio::test]
-async fn event_project_exclusions_check_recorded_and_current_issue_attribution() {
+async fn events_keep_historical_current_and_workspace_attributions_without_lookups() {
     let upstream = start_mock(json!({
         "items": [
-            {"id": "historical-hidden", "project_id": "project-hidden", "issue_id": null},
+            {"id": "historical-member", "project_id": "project-member", "issue_id": null},
             {
-                "id": "current-hidden-from-reference",
+                "id": "current-member-from-reference",
                 "project_id": "project-visible",
-                "issue_id": "issue-ref-hidden",
-                "issue_ref": {"project_id": "project-hidden"}
+                "issue_id": "issue-ref-member",
+                "issue_ref": {"project_id": "project-member"}
             },
             {
-                "id": "current-hidden-from-lookup",
+                "id": "current-member-from-lookup",
                 "project_id": "project-visible",
-                "issue_id": "issue-lookup-hidden",
+                "issue_id": "issue-lookup-member",
                 "issue_ref": null
             },
             {"id": "workspace", "project_id": null, "issue_id": null, "project_name": null},
@@ -1470,11 +1402,11 @@ async fn event_project_exclusions_check_recorded_and_current_issue_attribution()
     }))
     .await;
     upstream.state.set_path_response(
-        "/api/v1/issues/issue-lookup-hidden",
+        "/api/v1/issues/issue-lookup-member",
         StatusCode::OK,
-        json!({"id": "issue-lookup-hidden", "project_id": "project-hidden"}),
+        json!({"id": "issue-lookup-member", "project_id": "project-member"}),
     );
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(app, "list_events", json!({})).await;
     assert_eq!(
@@ -1484,23 +1416,26 @@ async fn event_project_exclusions_check_recorded_and_current_issue_attribution()
             .iter()
             .map(|event| event["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["workspace", "visible"]
+        [
+            "historical-member",
+            "current-member-from-reference",
+            "current-member-from-lookup",
+            "workspace",
+            "visible"
+        ]
     );
-    assert_eq!(
-        upstream.state.requests(),
-        ["/api/v1/events", "/api/v1/issues/issue-lookup-hidden"]
-    );
+    assert_eq!(upstream.state.requests(), ["/api/v1/events"]);
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn event_excluded_only_page_keeps_its_cursor_for_the_next_native_page() {
+async fn event_empty_page_keeps_its_cursor_for_the_next_native_page() {
     let upstream = start_mock(json!({
-        "items": [{"id": "hidden", "project_id": "project-hidden", "issue_id": null}],
+        "items": [],
         "next_cursor": "continue+/=opaque"
     }))
     .await;
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let first = call_tool(app.clone(), "list_events", json!({"limit": 1})).await;
     assert_eq!(first["data"]["items"], json!([]));
@@ -1529,7 +1464,7 @@ async fn event_excluded_only_page_keeps_its_cursor_for_the_next_native_page() {
 }
 
 #[tokio::test]
-async fn event_attribution_lookup_failure_fails_the_whole_page() {
+async fn event_attribution_does_not_require_an_accessible_parent() {
     let upstream = start_mock(json!({
         "items": [{
             "id": "cannot-attribute",
@@ -1545,20 +1480,19 @@ async fn event_attribution_lookup_failure_fails_the_whole_page() {
         StatusCode::INTERNAL_SERVER_ERROR,
         json!({"error": {"code": "internal_error", "message": "lookup failed"}}),
     );
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(app, "list_events", json!({})).await;
-    assert_eq!(result["error"]["source"], "upstream");
-    assert_eq!(result["error"]["status"], 500);
-    assert!(result["data"].is_null());
-    assert_eq!(upstream.state.requests().len(), 2);
+    assert!(result["error"].is_null());
+    assert_eq!(result["data"]["items"][0]["id"], "cannot-attribute");
+    assert_eq!(upstream.state.requests(), ["/api/v1/events"]);
     upstream.task.abort();
 }
 
 #[tokio::test]
 async fn context_list_maps_scope_filters_and_preserves_the_native_cursor() {
     let upstream = start_mock(json!({"items": [], "next_cursor": "next+/="})).await;
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
     let result = call_tool(
         app,
         "list_context",
@@ -1598,7 +1532,7 @@ async fn context_list_maps_scope_filters_and_preserves_the_native_cursor() {
 }
 
 #[tokio::test]
-async fn context_list_resolves_issue_ownership_and_filters_excluded_scopes() {
+async fn context_list_keeps_all_scopes_without_parent_lookups() {
     let upstream = start_mock(json!({})).await;
     upstream.state.set_response(
         "/api/v1/context",
@@ -1611,7 +1545,7 @@ async fn context_list_resolves_issue_ownership_and_filters_excluded_scopes() {
                 },
                 {
                     "id": "project-context",
-                    "scope": {"project_id": "project-hidden", "issue_id": null},
+                    "scope": {"project_id": "project-member", "issue_id": null},
                     "version": 2
                 },
                 {
@@ -1628,10 +1562,10 @@ async fn context_list_resolves_issue_ownership_and_filters_excluded_scopes() {
         json!({
             "mode": "member",
             "id": "issue-member",
-            "project": {"id": "project-hidden", "name": "Hidden", "owner": {"id": "owner"}}
+            "project": {"id": "project-member", "name": "Shared", "owner": {"id": "owner"}}
         }),
     );
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(app, "list_context", json!({})).await;
 
@@ -1642,18 +1576,15 @@ async fn context_list_resolves_issue_ownership_and_filters_excluded_scopes() {
             .iter()
             .map(|item| item["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["workspace-context"]
+        ["issue-context", "project-context", "workspace-context"]
     );
     assert_eq!(result["data"]["next_cursor"], "continue");
-    assert_eq!(
-        upstream.state.requests(),
-        ["/api/v1/context", "/api/v1/issues/issue-member"]
-    );
+    assert_eq!(upstream.state.requests(), ["/api/v1/context"]);
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn context_issue_scope_filter_resolves_current_project_before_listing() {
+async fn context_issue_scope_selection_uses_only_the_context_route() {
     let upstream = start_mock(json!({"items": [], "next_cursor": null})).await;
     upstream.state.set_response(
         "/api/v1/issues/issue-member",
@@ -1663,22 +1594,19 @@ async fn context_issue_scope_filter_resolves_current_project_before_listing() {
             "project": {"id": "project-visible", "name": "Shared", "owner": {"id": "owner"}}
         }),
     );
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     call_tool(app, "list_context", json!({"issue_id": "issue-member"})).await;
 
     assert_eq!(
         upstream.state.requests(),
-        [
-            "/api/v1/issues/issue-member",
-            "/api/v1/context?issue=issue-member"
-        ]
+        ["/api/v1/context?issue=issue-member"]
     );
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn context_scope_refuses_to_return_data_when_issue_ownership_cannot_be_resolved() {
+async fn context_scope_does_not_require_parent_project_attribution() {
     let upstream = start_mock(json!({})).await;
     upstream.state.set_response(
         "/api/v1/context",
@@ -1695,16 +1623,13 @@ async fn context_scope_refuses_to_return_data_when_issue_ownership_cannot_be_res
         "/api/v1/issues/issue-unresolved",
         json!({"mode": "member", "id": "issue-unresolved", "project": {"owner": {"id": "owner"}}}),
     );
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(app, "list_context", json!({})).await;
 
-    assert_eq!(result["error"]["source"], "schema");
-    assert_eq!(result["error"]["code"], "invalid_upstream_shape");
-    assert_eq!(
-        upstream.state.requests(),
-        ["/api/v1/context", "/api/v1/issues/issue-unresolved"]
-    );
+    assert!(result["error"].is_null());
+    assert_eq!(result["data"]["items"][0]["id"], "context-item");
+    assert_eq!(upstream.state.requests(), ["/api/v1/context"]);
     upstream.task.abort();
 }
 
@@ -1728,7 +1653,7 @@ async fn get_context_preserves_versions_and_redacted_fields_without_inventing_va
     upstream
         .state
         .set_response("/api/v1/context/context-env", context.clone());
-    let app = configured_app(&upstream, &["project-hidden"]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(app, "get_context", json!({"context_id": "context-env"})).await;
 
@@ -1783,7 +1708,7 @@ async fn issue_context_and_journal_preserve_native_projections_and_call_only_the
     upstream
         .state
         .set_response("/api/v1/issues/issue-a/journal", journal.clone());
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
 
     let context_result = call_tool(
         app.clone(),
@@ -1810,73 +1735,6 @@ async fn issue_context_and_journal_preserve_native_projections_and_call_only_the
 }
 
 #[tokio::test]
-async fn issue_context_ownership_resolution_fails_closed_for_redacted_member_projects() {
-    let upstream = start_mock(json!({})).await;
-    upstream.state.set_response(
-        "/api/v1/issues/issue-member",
-        json!({
-            "mode": "member",
-            "id": "issue-member",
-            "project": {"owner": {"id": "owner"}}
-        }),
-    );
-    let app = configured_app(&upstream, &["project-hidden"]);
-
-    let result = call_tool(
-        app,
-        "get_issue_context",
-        json!({"issue_id": "issue-member"}),
-    )
-    .await;
-
-    assert_eq!(result["error"]["source"], "schema");
-    assert_eq!(result["error"]["code"], "invalid_upstream_shape");
-    assert_eq!(upstream.state.requests(), ["/api/v1/issues/issue-member"]);
-    upstream.task.abort();
-}
-
-#[tokio::test]
-async fn direct_context_and_issue_context_reads_block_excluded_ownership() {
-    let upstream = start_mock(json!({})).await;
-    upstream.state.set_response(
-        "/api/v1/context/context-hidden",
-        json!({
-            "id": "context-hidden",
-            "scope": {"project_id": "project-hidden", "issue_id": null},
-            "version": 1
-        }),
-    );
-    upstream.state.set_response(
-        "/api/v1/issues/issue-hidden",
-        json!({
-            "mode": "member",
-            "id": "issue-hidden",
-            "project": {"id": "project-hidden", "name": "Hidden", "owner": {"id": "owner"}}
-        }),
-    );
-    let app = configured_app(&upstream, &["project-hidden"]);
-
-    for (name, args) in [
-        ("get_context", json!({"context_id": "context-hidden"})),
-        ("get_issue_context", json!({"issue_id": "issue-hidden"})),
-        ("get_issue_journal", json!({"issue_id": "issue-hidden"})),
-    ] {
-        let result = call_tool(app.clone(), name, args).await;
-        assert_eq!(result["error"]["source"], "visibility");
-    }
-
-    assert_eq!(
-        upstream.state.requests(),
-        [
-            "/api/v1/context/context-hidden",
-            "/api/v1/issues/issue-hidden",
-            "/api/v1/issues/issue-hidden"
-        ]
-    );
-    upstream.task.abort();
-}
-
-#[tokio::test]
 async fn list_runs_preserves_status_and_outcome_and_uses_native_filters() {
     let run = json!({
         "id": "run-a",
@@ -1890,7 +1748,7 @@ async fn list_runs_preserves_status_and_outcome_and_uses_native_filters() {
         "/api/v1/runs",
         json!({"items": [run.clone()], "next_cursor": "next+/="}),
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(
         app.clone(),
@@ -1933,72 +1791,6 @@ async fn list_runs_preserves_status_and_outcome_and_uses_native_filters() {
 }
 
 #[tokio::test]
-async fn run_exclusions_resolve_current_owner_and_fail_closed_for_direct_reads() {
-    let upstream = start_mock(json!({})).await;
-    upstream.state.set_response(
-        "/api/v1/runs",
-        json!({
-            "items": [
-                {"id": "run-visible", "issue_id": "issue-visible"},
-                {"id": "run-hidden", "issue_id": "issue-member"}
-            ],
-            "next_cursor": "keep-going"
-        }),
-    );
-    upstream.state.set_response(
-        "/api/v1/issues/issue-visible",
-        json!({"id": "issue-visible", "project_id": "project-visible", "number": 4}),
-    );
-    upstream.state.set_response(
-        "/api/v1/issues/issue-member",
-        json!({
-            "mode": "member",
-            "id": "issue-member",
-            "project": {"id": "project-hidden", "name": "Hidden", "owner": {"id": "owner"}},
-            "number": 9
-        }),
-    );
-    upstream.state.set_response(
-        "/api/v1/runs/run-hidden",
-        run_detail("run-hidden", "issue-member"),
-    );
-    let app = configured_app(&upstream, &["project-hidden"]);
-
-    let page = call_tool(app.clone(), "list_runs", json!({})).await;
-    assert_eq!(
-        page["data"]["items"],
-        json!([{"id": "run-visible", "issue_id": "issue-visible"}])
-    );
-    assert_eq!(page["data"]["next_cursor"], "keep-going");
-    assert_eq!(
-        page["meta"]["links"][0]["href"],
-        format!("{}/issues/project-visible/4", upstream.base_url)
-    );
-
-    let direct = call_tool(app.clone(), "get_run", json!({"run_id": "run-hidden"})).await;
-    assert_eq!(direct["error"]["source"], "visibility");
-    assert!(direct["data"].is_null());
-    assert!(
-        !upstream
-            .state
-            .requests()
-            .iter()
-            .any(|path| path.ends_with("/log"))
-    );
-
-    let dispatch = call_tool(app, "explain_dispatch", json!({"issue_id": "issue-member"})).await;
-    assert_eq!(dispatch["error"]["source"], "visibility");
-    assert!(
-        !upstream
-            .state
-            .requests()
-            .iter()
-            .any(|path| path.ends_with("/dispatch"))
-    );
-    upstream.task.abort();
-}
-
-#[tokio::test]
 async fn get_run_keeps_native_status_outcome_and_dispatch_explanation_separate() {
     let detail = run_detail("run-a", "issue-a");
     let dispatch = json!({
@@ -2026,7 +1818,7 @@ async fn get_run_keeps_native_status_outcome_and_dispatch_explanation_separate()
     upstream
         .state
         .set_response("/api/v1/issues/issue-a/dispatch", dispatch.clone());
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
 
     let run = call_tool(app.clone(), "get_run", json!({"run_id": "run-a"})).await;
     assert_eq!(run["data"], detail);
@@ -2066,7 +1858,7 @@ async fn run_log_tail_and_full_sources_are_bounded_and_continuations_check_the_d
             MockReply::bytes("abc", "text/plain; charset=utf-8"),
         ],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
 
     let tail = call_tool(
         app.clone(),
@@ -2126,7 +1918,7 @@ async fn oversized_full_run_log_preserves_run_metadata_and_issue_link() {
             "text/plain; charset=utf-8",
         )],
     );
-    let app = configured_app(&upstream, &[]);
+    let app = configured_app(&upstream);
 
     let result = call_tool(
         app,
@@ -2181,7 +1973,7 @@ async fn full_run_log_preserves_missing_expired_and_temporarily_unavailable_stat
                 json!({"error": {"code": "run_log_error", "message": "unavailable"}}),
             )],
         );
-        let app = configured_app(&upstream, &[]);
+        let app = configured_app(&upstream);
 
         let result = call_tool(
             app,
@@ -2192,6 +1984,327 @@ async fn full_run_log_preserves_missing_expired_and_temporarily_unavailable_stat
         assert_eq!(result["error"]["source"], "upstream");
         assert_eq!(result["error"]["status"], status.as_u16());
         assert!(result["data"].is_null());
+        upstream.task.abort();
+    }
+}
+
+#[tokio::test]
+async fn direct_issue_reads_keep_current_project_attribution_after_a_transfer() {
+    let issue = json!({"id": "issue-moved", "project_id": "project-current", "number": 8});
+    let upstream = start_mock(issue.clone()).await;
+    upstream.state.set_response(
+        "/api/v1/projects/project-current",
+        json!({"id": "project-current"}),
+    );
+    let app = configured_app(&upstream);
+    let project = call_tool(
+        app.clone(),
+        "get_project",
+        json!({"project_id": "project-current"}),
+    )
+    .await;
+    assert_eq!(project["data"]["id"], "project-current");
+    for args in [
+        json!({"issue_id": "issue-moved"}),
+        json!({"project_id": "project-old", "number": 8}),
+        json!({"project_id": "project-current", "number": 8}),
+    ] {
+        let result = call_tool(app.clone(), "get_issue", args).await;
+        assert_eq!(result["data"], issue);
+        assert_eq!(
+            result["meta"]["links"][0]["href"],
+            format!("{}/issues/project-current/8", upstream.base_url)
+        );
+    }
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/projects/project-current",
+            "/api/v1/issues/issue-moved",
+            "/api/v1/projects/project-old/issues/8",
+            "/api/v1/projects/project-current/issues/8",
+        ]
+    );
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn run_lists_keep_all_token_visible_rows_without_parent_lookups() {
+    let page = json!({"items": [
+        {"id": "run-owner", "issue_id": "issue-owner"},
+        {"id": "run-member", "issue_id": "issue-member"},
+        {"id": "run-redacted"}
+    ], "next_cursor": "continue"});
+    let upstream = start_mock(page.clone()).await;
+    let result = call_tool(configured_app(&upstream), "list_runs", json!({})).await;
+    assert_eq!(result["data"], page);
+    assert_eq!(upstream.state.requests(), ["/api/v1/runs"]);
+    upstream.task.abort();
+}
+
+#[tokio::test]
+async fn required_upstream_denials_keep_status_and_code_across_read_paths() {
+    for status in [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
+    ] {
+        for (name, args, path, prerequisites) in [
+            ("list_projects", json!({}), "/api/v1/projects", vec![]),
+            (
+                "get_project",
+                json!({"project_id": "project-a"}),
+                "/api/v1/projects/project-a",
+                vec![],
+            ),
+            (
+                "list_issues",
+                json!({"project_id": "project-a"}),
+                "/api/v1/issues",
+                vec![],
+            ),
+            (
+                "get_issue",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/issues/issue-a",
+                vec![],
+            ),
+            (
+                "get_issue",
+                json!({"project_id": "project-a", "number": 7}),
+                "/api/v1/projects/project-a/issues/7",
+                vec![],
+            ),
+            (
+                "list_issue_artifacts",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/issues/issue-a/artifacts",
+                vec!["/api/v1/issues/issue-a"],
+            ),
+            (
+                "get_issue_artifact",
+                json!({"issue_id": "issue-a", "name": "report"}),
+                "/api/v1/issues/issue-a/artifacts/report",
+                vec!["/api/v1/issues/issue-a"],
+            ),
+            (
+                "read_artifact_content",
+                json!({"issue_id": "issue-a", "name": "report"}),
+                "/api/v1/issues/issue-a/artifacts/report/content",
+                vec![
+                    "/api/v1/issues/issue-a",
+                    "/api/v1/issues/issue-a/artifacts/report",
+                ],
+            ),
+            (
+                "list_workflows",
+                json!({"project_id": "project-a"}),
+                "/api/v1/workflows",
+                vec![],
+            ),
+            (
+                "get_workflow",
+                json!({"workflow_id": "workflow-a"}),
+                "/api/v1/workflows/workflow-a",
+                vec![],
+            ),
+            ("list_labels", json!({}), "/api/v1/labels", vec![]),
+            (
+                "list_events",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/events",
+                vec![],
+            ),
+            (
+                "list_context",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/context",
+                vec![],
+            ),
+            (
+                "get_context",
+                json!({"context_id": "context-a"}),
+                "/api/v1/context/context-a",
+                vec![],
+            ),
+            (
+                "get_issue_context",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/issues/issue-a/context",
+                vec![],
+            ),
+            (
+                "get_issue_journal",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/issues/issue-a/journal",
+                vec![],
+            ),
+            (
+                "get_run",
+                json!({"run_id": "run-a"}),
+                "/api/v1/runs/run-a",
+                vec![],
+            ),
+            (
+                "list_runs",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/runs",
+                vec![],
+            ),
+            (
+                "get_run_log",
+                json!({"run_id": "run-a", "mode": "full"}),
+                "/api/v1/runs/run-a/log",
+                vec!["/api/v1/runs/run-a", "/api/v1/issues/issue-a"],
+            ),
+            (
+                "explain_dispatch",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/issues/issue-a/dispatch",
+                vec!["/api/v1/issues/issue-a"],
+            ),
+            (
+                "list_issue_artifacts",
+                json!({"issue_id": "issue-a"}),
+                "/api/v1/issues/issue-a",
+                vec![],
+            ),
+            (
+                "get_issue_artifact",
+                json!({"issue_id": "issue-a", "name": "report"}),
+                "/api/v1/issues/issue-a",
+                vec![],
+            ),
+            (
+                "read_artifact_content",
+                json!({"issue_id": "issue-a", "name": "report"}),
+                "/api/v1/issues/issue-a",
+                vec![],
+            ),
+        ] {
+            let upstream = start_mock(json!({})).await;
+            upstream.state.set_response(
+                "/api/v1/issues/issue-a",
+                json!({"id": "issue-a", "project_id": "project-a", "number": 7}),
+            );
+            upstream
+                .state
+                .set_response("/api/v1/runs/run-a", run_detail("run-a", "issue-a"));
+            upstream.state.set_response(
+                "/api/v1/issues/issue-a/artifacts/report",
+                artifact_detail(
+                    "artifact-a",
+                    "issue-a",
+                    "report",
+                    "text",
+                    vec![artifact_version(1, "text/plain")],
+                ),
+            );
+            upstream.state.set_path_response(path, status, json!({"error": {"code": "access_denied", "message": "Token cannot read this resource"}}));
+            let result = call_tool(configured_app(&upstream), name, args).await;
+            assert_eq!(
+                result["error"]["source"], "upstream",
+                "{name} {path}: {result}"
+            );
+            assert_eq!(result["error"]["status"], status.as_u16());
+            assert_eq!(result["error"]["code"], "access_denied");
+            assert!(result["data"].is_null());
+            let requests = upstream.state.requests();
+            let paths: Vec<_> = requests
+                .iter()
+                .map(|uri| uri.split('?').next().unwrap())
+                .collect();
+            assert_eq!(
+                paths,
+                [prerequisites, vec![path]].concat(),
+                "no retries or policy lookups for {name}"
+            );
+            upstream.task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn optional_run_and_dispatch_links_do_not_gate_token_authorized_reads() {
+    for status in [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
+    ] {
+        let upstream = start_mock(json!({})).await;
+        let run = run_detail("run-a", "issue-a");
+        upstream
+            .state
+            .set_response("/api/v1/runs/run-a", run.clone());
+        upstream.state.set_path_response(
+            "/api/v1/issues/issue-a",
+            status,
+            json!({"error": {"code": "access_denied"}}),
+        );
+        upstream
+            .state
+            .set_response("/api/v1/issues/issue-a/dispatch", json!({"eligible": true}));
+        upstream.state.set_replies(
+            "/api/v1/runs/run-a/log",
+            [MockReply::bytes("full log", "text/plain")],
+        );
+        let app = configured_app(&upstream);
+        for (name, args, expected) in [
+            ("get_run", json!({"run_id": "run-a"}), run),
+            (
+                "explain_dispatch",
+                json!({"issue_id": "issue-a"}),
+                json!({"eligible": true}),
+            ),
+        ] {
+            let result = call_tool(app.clone(), name, args).await;
+            assert_eq!(result["data"], expected);
+            assert_eq!(result["meta"]["links"], json!([]));
+        }
+        let log = call_tool(
+            app,
+            "get_run_log",
+            json!({"run_id": "run-a", "mode": "full"}),
+        )
+        .await;
+        assert_eq!(log["data"]["content"], "full log");
+        assert_eq!(log["meta"]["links"], json!([]));
+        assert_eq!(upstream.state.requests().len(), 7);
+        upstream.task.abort();
+    }
+}
+
+#[tokio::test]
+async fn direct_reads_still_reject_mismatched_resource_identity() {
+    for (name, args, path) in [
+        (
+            "get_project",
+            json!({"project_id": "project-a"}),
+            "/api/v1/projects/project-a",
+        ),
+        (
+            "get_issue",
+            json!({"issue_id": "issue-a"}),
+            "/api/v1/issues/issue-a",
+        ),
+        (
+            "get_context",
+            json!({"context_id": "context-a"}),
+            "/api/v1/context/context-a",
+        ),
+        ("get_run", json!({"run_id": "run-a"}), "/api/v1/runs/run-a"),
+        (
+            "list_issue_artifacts",
+            json!({"issue_id": "issue-a"}),
+            "/api/v1/issues/issue-a",
+        ),
+    ] {
+        let upstream = start_mock(json!({"id": "different-resource"})).await;
+        let result = call_tool(configured_app(&upstream), name, args).await;
+        assert_eq!(result["error"]["source"], "schema", "{name}: {result}");
+        assert_eq!(result["error"]["status"], 200);
+        assert!(result["data"].is_null());
+        assert_eq!(upstream.state.requests(), [path]);
         upstream.task.abort();
     }
 }
