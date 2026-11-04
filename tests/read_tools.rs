@@ -383,13 +383,12 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
             "get_run",
             "get_run_log",
             "explain_dispatch",
+            "append_issue_comment",
         ]
     );
-    assert!(
-        tools
-            .iter()
-            .all(|tool| tool["annotations"]["readOnlyHint"] == true)
-    );
+    assert!(tools.iter().all(
+        |tool| tool["annotations"]["readOnlyHint"] == (tool["name"] != "append_issue_comment")
+    ));
     let get_issue = tools
         .iter()
         .find(|tool| tool["name"] == "get_issue")

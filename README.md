@@ -1,13 +1,14 @@
 # tines-mcp
 
-**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
+**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data, and append issue comments. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
 
 ## Available tools
 
-The service provides nineteen read-only tools:
+The service provides nineteen read-only tools and one append tool:
 
 - **list_projects** and **get_project**
 - **list_issues** and **get_issue**
+- **append_issue_comment** to append a comment using an immutable issue ID
 - **list_issue_artifacts**, **get_issue_artifact**, and **read_artifact_content**
 - **list_workflows** and **get_workflow**
 - **list_labels**
@@ -18,6 +19,20 @@ The service provides nineteen read-only tools:
 - **list_runs**, **get_run**, **get_run_log**, and **explain_dispatch** for run history, logs, and dispatch explanations
 
 **get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response preserves the current project attribution after an issue moves.
+
+**append_issue_comment** requires **issue_id** and **body**. It preserves the body verbatim and accepts nonblank text up to 100,000 JavaScript UTF-16 code units, subject to the unchanged 64 KiB serialized MCP request limit. It uses the configured Tines token and normal API permissions. It verifies the issue identity before sending the append. The result includes the native comment object and an issue link when available.
+
+The append is non-idempotent: repeating it can create another comment. The service never retries it automatically. If the outcome is unknown, inspect the issue before deciding whether to append again. Losing or canceling the client response does not undo a committed comment. The tool provides no exactly-once guarantee and cannot edit or delete comments.
+
+Errors use the normal envelope. **error.details.write_outcome** describes append failures:
+
+| Value | Meaning |
+| --- | --- |
+| **not_attempted** | The POST was not dispatched. |
+| **unknown** | A comment may have been created. Check the issue before repeating the append. |
+| **created** | A valid creation receipt arrived, but the adapter could not return the ordinary result. **comment_id** is retained when it fits the result limit. |
+
+Definitive native rejections preserve the API error without an outcome field.
 
 **list_issues** uses the global issue list and returns one native page. It omits descriptions by default. Set **descriptions=true** to include them. Continue only when **next_cursor** is not null, and keep the same filters on the next call. An upstream empty page can still have a continuation cursor.
 
@@ -55,7 +70,7 @@ curl -i http://127.0.0.1:8080/healthz
 
 The health endpoint returns `204 No Content`. It does not contact Tines or validate an upstream token.
 
-The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. Read-only access can still reveal sensitive data. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
+The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. The configured token can both read data and append comments through these tools. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
 
 The default Host allowlist permits loopback hosts. Browser requests with an `Origin` header are rejected unless that exact origin is configured. Host and Origin checks limit unintended requests, but they are not authentication.
 
@@ -87,7 +102,7 @@ podman run --rm --stop-timeout 60 \
 
 The command publishes port 8080 on host loopback only. The Host allowlist contains that exact host and port. If an MCP client sends an `Origin` header, set `MCP_ALLOWED_ORIGINS` to that exact origin. The default empty list rejects every request that has an `Origin` header.
 
-The process handles `SIGTERM` and stops accepting requests gracefully. The example allows up to 60 seconds for shutdown; the runtime timeout should be longer than the 45-second tool deadline if in-flight reads need to finish.
+The process handles `SIGTERM` and stops accepting requests gracefully. The example allows up to 60 seconds for shutdown; the runtime timeout should be longer than the 45-second tool deadline if in-flight calls need to finish.
 
 ## Configuration
 
@@ -181,7 +196,7 @@ Start the replacement adapter and recreate `tunnel-client` with `--network conta
 
 The tunnel controls access to its endpoint. It does not add authentication to this MCP server or reduce the permissions of its configured Tines token. Host and Origin validation are additional request checks, not an access-control boundary.
 
-The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration and read behavior. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 5. This repository has not performed that end-to-end check.
+The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration, read behavior, and comment appends. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 5. This repository has not performed that end-to-end check.
 
 ## Runtime limits
 
