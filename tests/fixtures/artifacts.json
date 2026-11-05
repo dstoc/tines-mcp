@@ -1,0 +1,197 @@
+{
+  "reference_revision": "af6cb25febf1b45d7eff32251f78fcf6355aed4a",
+  "sources": [
+    "apps/web/src/lib/server/api/artifacts.ts: upsertArtifactOnce, reaffirmArtifactOnce, serializeArtifact, serializeVersion, typeMismatch, assertVersionCap",
+    "apps/web/src/lib/server/api/artifacts.test.ts: upserts per type, validates payloads, and enforces caps",
+    "packages/shared/src/types.ts: UpsertArtifactRequest, Artifact, ArtifactVersion",
+    "apps/web/src/lib/server/api/permissions.ts: requireAccess",
+    "apps/web/src/lib/server/api/core.ts: api, errorResponse"
+  ],
+  "note": "Representative native shapes checked against the pinned source; not live API execution. Error classification and outbound counts belong to mcp-13.",
+  "puts": [
+    {
+      "label": "text",
+      "payload": {
+        "type": "text",
+        "description": "  literal $VAR `text`  ",
+        "content": "  # Draft\n\n🦀 \\ \"quoted\"\n",
+        "filename": "design.md",
+        "content_type": "text/markdown; charset=utf-8"
+      }
+    },
+    {
+      "label": "text defaults remain native",
+      "payload": {
+        "type": "text",
+        "content": "draft"
+      }
+    },
+    {
+      "label": "text revision without type",
+      "payload": {
+        "content": "new draft"
+      }
+    },
+    {
+      "label": "link",
+      "payload": {
+        "type": "link",
+        "url": "https://example.test/review?q=one&v=two#notes",
+        "title": "  Review thread  "
+      }
+    },
+    {
+      "label": "PR URL",
+      "payload": {
+        "type": "pr",
+        "pr_url": "https://github.com/acme/app/pull/123"
+      }
+    },
+    {
+      "label": "split PR",
+      "payload": {
+        "pr_repo_url": "git@github.com:acme/app.git",
+        "pr_number": 124
+      }
+    },
+    {
+      "label": "metadata",
+      "payload": {
+        "description": "The doc"
+      }
+    },
+    {
+      "label": "clear description",
+      "payload": {
+        "description": ""
+      }
+    },
+    {
+      "label": "file metadata",
+      "payload": {
+        "type": "file",
+        "description": "A screenshot"
+      }
+    },
+    {
+      "label": "folder metadata",
+      "payload": {
+        "type": "folder",
+        "description": "A site"
+      }
+    },
+    {
+      "label": "empty metadata no-op",
+      "payload": {}
+    }
+  ],
+  "artifact": {
+    "id": "ctx_0123456789abcdef",
+    "name": "design-doc",
+    "artifact_type": "text",
+    "description": "The doc",
+    "issue_id": "iss_0123456789abcdef",
+    "version_count": 1,
+    "current_version": {
+      "version": 1,
+      "filename": "design-doc.md",
+      "content_type": "text/markdown",
+      "size_bytes": null,
+      "file_count": null,
+      "url": null,
+      "title": null,
+      "pr_repo_url": null,
+      "pr_number": null,
+      "reaffirmed_from": null,
+      "actor": {
+        "user_id": "user_fixture",
+        "user_name": "Example Author",
+        "api_key_id": null,
+        "api_key_name": null
+      },
+      "created_at": 1793836800000
+    },
+    "fresh": false,
+    "created_at": 1793836800000,
+    "updated_at": 1793836800000
+  },
+  "errors": [
+    {
+      "tools": [
+        "put_issue_artifact"
+      ],
+      "status": 422,
+      "error": {
+        "code": "artifact_type_mismatch",
+        "message": "Artifact \"design-doc\" is of type \"text\"; the type is immutable — attach as a different name, or delete the artifact first (requested \"link\")",
+        "details": {
+          "field": "type",
+          "existing_type": "text",
+          "requested_type": "link"
+        }
+      }
+    },
+    {
+      "tools": [
+        "put_issue_artifact"
+      ],
+      "status": 422,
+      "error": {
+        "code": "artifact_payload_mismatch",
+        "message": "Field \"url\" does not belong to artifact type \"text\"; allowed payload fields: content, filename, content_type",
+        "details": {
+          "type": "text",
+          "rejected_fields": [
+            "url"
+          ],
+          "allowed_fields": [
+            "content",
+            "filename",
+            "content_type"
+          ]
+        }
+      }
+    },
+    {
+      "tools": [
+        "put_issue_artifact",
+        "reaffirm_issue_artifact"
+      ],
+      "status": 422,
+      "error": {
+        "code": "artifact_version_limit",
+        "message": "Artifact \"design-doc\" already has 50 versions (the cap is 50); delete the artifact if its history is disposable",
+        "details": {
+          "max_versions": 50
+        }
+      }
+    },
+    {
+      "tools": [
+        "put_issue_artifact",
+        "reaffirm_issue_artifact"
+      ],
+      "status": 403,
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "artifact.update",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tools": [
+        "put_issue_artifact",
+        "reaffirm_issue_artifact"
+      ],
+      "status": 500,
+      "error": {
+        "code": "internal",
+        "message": "Internal error"
+      }
+    }
+  ]
+}
