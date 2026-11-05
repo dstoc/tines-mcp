@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GHCR release checks. Package creation is limited to the first genuine 0.1.1 handoff."""
+"""GHCR release checks. Package creation is limited to the first genuine 0.1.2 handoff."""
 
 import argparse
 import http.client
@@ -25,10 +25,18 @@ VERSIONS = f"{PACKAGE}/versions"
 SHA = r"[0-9a-f]{40}"
 DIGEST = r"sha256:[0-9a-f]{64}"
 TAG = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+PACKAGE_BODY_LIMIT = 8 * 1024 * 1024
+METADATA_PURPOSES = frozenset({"initial_authority", "prepush", "postpush", "acceptance", "finalization"})
 
 
 class ReleaseError(Exception):
     pass
+
+
+class JsonResponseError(ReleaseError):
+    def __init__(self, result, message):
+        super().__init__(message)
+        self.result = result
 
 
 def require(condition, message):
@@ -52,17 +60,18 @@ def read_json(value):
     def unique_object(pairs):
         result = {}
         for key, item in pairs:
-            require(key not in result, "Duplicate JSON field")
+            if key in result:
+                raise JsonResponseError("duplicate_field", "Duplicate JSON field")
             result[key] = item
         return result
 
     def invalid_constant(value):
-        raise ReleaseError("Invalid JSON constant")
+        raise JsonResponseError("invalid_constant", "Invalid JSON constant")
 
     try:
         return json.loads(value, object_pairs_hook=unique_object, parse_constant=invalid_constant)
-    except (ValueError, TypeError):
-        raise ReleaseError("Invalid JSON response") from None
+    except (ValueError, TypeError, RecursionError):
+        raise JsonResponseError("invalid", "Invalid JSON response") from None
 
 
 def nested(value, *keys):
@@ -107,7 +116,7 @@ def dispatch(env):
                 "Draft release ID handoff required")
     # This allowance is not proof of absence: release authorization must establish
     # authoritative owner absence, exclusive writers, and no unresolved prior push.
-    creation_eligible = (event == "push" and tag == "v0.1.1"
+    creation_eligible = (event == "push" and tag == "v0.1.2"
                          and env.get("GITHUB_RUN_ATTEMPT") == "1")
     return dict(tag=tag, version=tag[1:], source_sha=sha, workflow_sha=env["GITHUB_SHA"],
                 platform="linux/amd64", creation_eligible=creation_eligible, image=f"{IMAGE}:{tag[1:]}",
@@ -155,27 +164,67 @@ def source_version(source, state):
 
 
 class Registry:
-    def __init__(self, token):
+    def __init__(self, token, observe=None):
         require(bool(token), "Actions GITHUB_TOKEN required")
         self.token = token
+        self.observe = observe
+        self.metadata_purpose = "initial_authority"
 
     def get(self, path):
         # Fixed TLS origin, no redirect following and no error-to-absence conversion.
-        connection = http.client.HTTPSConnection("api.github.com", timeout=60)
+        snapshot = dict(schema_version=1, route="package_metadata", http_status=None,
+                        body_bytes_observed=None, json_result="not_read", json_type="unknown",
+                        link_state="unknown", json_object=None, message_exact=None,
+                        documentation_string=None, documentation_prefix=None, link_absent=None)
+        connection = None
         try:
+            connection = http.client.HTTPSConnection("api.github.com", timeout=60)
             connection.request("GET", path, headers={
                 "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "tines-mcp-release"})
             response = connection.getresponse()
-            body = response.read(8 * 1024 * 1024 + 1)
-            require(len(body) <= 8 * 1024 * 1024, "Package response too large")
-            return response.status, read_json(body), response.getheader("Link")
+            link = response.getheader("Link")
+            snapshot.update(http_status=response.status, link_absent=link is None,
+                            link_state="absent" if link is None else "empty" if link == "" else "present")
+            body = response.read(PACKAGE_BODY_LIMIT + 1)
+            snapshot["body_bytes_observed"] = len(body)
+            if len(body) > PACKAGE_BODY_LIMIT:
+                snapshot["json_result"] = "too_large"
+                raise ReleaseError("Package response too large")
+            try:
+                data = read_json(body)
+            except JsonResponseError as error:
+                snapshot["json_result"] = error.result
+                raise
+            kind = ("null" if data is None else "boolean" if isinstance(data, bool) else
+                    "object" if isinstance(data, dict) else "array" if isinstance(data, list) else
+                    "string" if isinstance(data, str) else "number")
+            obj = isinstance(data, dict)
+            documentation = data.get("documentation_url") if obj else None
+            snapshot.update(json_result="parsed", json_type=kind, json_object=obj,
+                            message_exact=obj and data.get("message") == "Not Found",
+                            documentation_string=isinstance(documentation, str),
+                            documentation_prefix=isinstance(documentation, str)
+                            and documentation.startswith("https://docs.github.com/rest/"))
+            return response.status, data, link
         except (OSError, http.client.HTTPException):
             raise ReleaseError("Package API transport failure; no absence established") from None
         finally:
-            connection.close()
+            try:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except (OSError, http.client.HTTPException):
+                        raise ReleaseError("Package API transport failure; no absence established") from None
+            finally:
+                # Version pages never enter the fixed-purpose diagnostic map. The
+                # synchronous sink persists even rejected/partially read responses.
+                if path == PACKAGE and self.observe is not None:
+                    self.observe(self.metadata_purpose, snapshot)
 
-    def lookup(self, version, allow_unavailable=False):
+    def lookup(self, version, allow_unavailable=False, *, purpose="initial_authority"):
+        require(purpose in METADATA_PURPOSES, "Invalid package metadata purpose")
+        self.metadata_purpose = purpose
         status, package, link = self.get(PACKAGE)
         if status == 404 and allow_unavailable:
             require(isinstance(package, dict)
@@ -512,6 +561,13 @@ class Release:
         self.state.update(values)
         write_json(self.record, self.state)
 
+    def observe_package(self, purpose, snapshot):
+        require(purpose in METADATA_PURPOSES, "Invalid package metadata purpose")
+        snapshots = {key: value for key, value in self.state.get("package_responses", {}).items()
+                     if key in METADATA_PURPOSES}
+        snapshots[purpose] = snapshot
+        self.save(package_responses=snapshots)
+
     def resolve(self):
         self.save(**dispatch(os.environ))
         resolve(self.workflow, self.state)
@@ -566,7 +622,7 @@ class Release:
                 "Installed gh lacks required attestation verification flags")
         self.save(gh_version=run("gh", "--version").splitlines()[0], operation="registry_authority")
         token = os.environ.get("GH_TOKEN", "")
-        registry = Registry(token)
+        registry = Registry(token, self.observe_package)
         # Keep login in the job's disposable file store, never an auto-detected OS helper.
         write_json(Path(os.environ["DOCKER_CONFIG"]) / "config.json", {"auths": {"ghcr.io": {}}})
         run("docker", "login", "ghcr.io", "--username", os.environ["GITHUB_ACTOR"], "--password-stdin", input=token)
@@ -595,7 +651,7 @@ class Release:
         self.save(operation="prepush_recheck")
         self.check_release()
         remote_tag(self.workflow, self.state)
-        before_id, before_digest = registry.lookup(self.state["version"], package_id is None)
+        before_id, before_digest = registry.lookup(self.state["version"], package_id is None, purpose="prepush")
         self.save(prepush_package_observation="unavailable" if before_id is None else "accessible")
         require(before_id == package_id and before_digest is None,
                 "Package identity changed or tag appeared; restart through positive-access recovery")
@@ -608,7 +664,7 @@ class Release:
         digest = digests[0]
         self.save(digest=digest, pinned_image=f"{IMAGE}@{digest}", stage="digest_observed")
         self.save(operation="postpush_registry_check")
-        after_id, after_digest = registry.lookup(self.state["version"])
+        after_id, after_digest = registry.lookup(self.state["version"], purpose="postpush")
         require(after_digest == digest and (package_id is None or after_id == package_id),
                 "Post-push package identity/digest conflict")
         self.save(package_id=after_id)
@@ -641,7 +697,8 @@ class Release:
         image_id = inspect_image(self.state["pinned_image"], self.state)
         smoke(self.workflow, image_id)
         remote_tag(self.workflow, self.state)
-        package_id, digest = Registry(os.environ.get("GH_TOKEN", "")).lookup(self.state["version"])
+        package_id, digest = Registry(os.environ.get("GH_TOKEN", ""), self.observe_package).lookup(
+            self.state["version"], purpose="acceptance")
         require(package_id == self.state["package_id"] and digest == self.state["digest"],
                 "Completion package identity/digest conflict")
         self.check_release()
@@ -679,7 +736,8 @@ class Release:
                 and self.state.get("stage") == "public_runtime_acceptance_complete", "Acceptance/evidence required")
         self.check_release()
         remote_tag(self.workflow, self.state)
-        package_id, digest = Registry(os.environ.get("GH_TOKEN", "")).lookup(self.state["version"])
+        package_id, digest = Registry(os.environ.get("GH_TOKEN", ""), self.observe_package).lookup(
+            self.state["version"], purpose="finalization")
         require(package_id == self.state["package_id"] and digest == self.state["digest"],
                 "Publication package identity/digest conflict")
         self.check_evidence()
@@ -726,7 +784,12 @@ def main():
     except (ReleaseError, OSError, KeyError, TypeError, ValueError) as error:
         # Never serialize raw exceptions or API bodies; fields may contain credentials.
         message = str(error) if isinstance(error, ReleaseError) else "Invalid response or local execution failure"
-        release.save(error=message, validation="incomplete")
+        try:
+            release.save(error=message, validation="incomplete")
+        except (ReleaseError, OSError, KeyError, TypeError, ValueError):
+            # The previous durable push boundary remains authoritative. Do not
+            # leak a second write exception or claim that evidence was retained.
+            print("Release record could not be saved; preserve existing evidence", file=sys.stderr)
         print(message, file=sys.stderr)
         return 1
     return 0

@@ -25,9 +25,9 @@ const job = workflow.jobs.release;
 const sha = 'a'.repeat(40);
 const context = (event = 'push', result = 'success', outputs = {}) => ({
   github: {event_name: event, repository: 'dstoc/tines-mcp', ref: 'refs/heads/main', run_attempt: '1'},
-  needs: {'release-please': {result, outputs: {release_created: 'true', id: '41', draft: 'true', tag_name: 'v0.1.1',
-    version: '0.1.1', sha, ...outputs}}},
-  inputs: event === 'workflow_dispatch' ? {tag: 'v0.1.1', source_sha: sha} : {},
+  needs: {'release-please': {result, outputs: {release_created: 'true', id: '41', draft: 'true', tag_name: 'v0.1.2',
+    version: '0.1.2', sha, ...outputs}}},
+  inputs: event === 'workflow_dispatch' ? {tag: 'v0.1.2', source_sha: sha} : {},
 });
 function evaluate(expression, values, cancelled = false, success = true) {
   const functions = [{name: 'cancelled', minArgs: 0, maxArgs: 0,
@@ -78,7 +78,7 @@ test('real workflow conditions handle skipped, failed and cancelled dependencies
   for (const event of ['pull_request', 'release', 'workflow_run']) {
     assert.equal(admission(context(event)), false);
   }
-  for (const overrides of [{repository: 'fork/tines-mcp'}, {ref: 'refs/tags/v0.1.1'},
+  for (const overrides of [{repository: 'fork/tines-mcp'}, {ref: 'refs/tags/v0.1.2'},
     {ref: 'refs/heads/other'}]) {
     const values = context();
     Object.assign(values.github, overrides);
@@ -88,10 +88,10 @@ test('real workflow conditions handle skipped, failed and cancelled dependencies
   assert.equal(evaluate(workflow.jobs['release-please'].if, context('workflow_dispatch')).coerceString(), 'false');
 });
 
-test('actual environment and helper derive creation only for first 0.1.1 handoff', () => {
+test('actual environment and helper derive creation only for first 0.1.2 handoff', () => {
   for (const attempt of ['1', '2', '', '01']) {
     for (const event of ['push', 'workflow_dispatch']) {
-      for (const version of ['0.1.0', '0.1.1', '0.1.2']) {
+      for (const version of ['0.1.0', '0.1.1', '0.1.2', '0.1.3']) {
         const values = context(event, event === 'push' ? 'success' : 'skipped',
           {tag_name: `v${version}`, version});
         Object.assign(values.github, {run_attempt: attempt});
@@ -100,7 +100,7 @@ test('actual environment and helper derive creation only for first 0.1.1 handoff
         assert.equal(result.status, 0, result.stderr);
         assert.equal(state.source_sha, sha);
         assert.equal(state.version, version);
-        assert.equal(state.creation_eligible, event === 'push' && version === '0.1.1' && attempt === '1');
+        assert.equal(state.creation_eligible, event === 'push' && version === '0.1.2' && attempt === '1');
       }
     }
   }
@@ -108,8 +108,8 @@ test('actual environment and helper derive creation only for first 0.1.1 handoff
 
 test('missing and malformed output reaches no publishing authority', () => {
   for (const outputs of [{sha: ''}, {sha: 'main'}, {sha: 'A'.repeat(40)},
-    {tag_name: ''}, {tag_name: 'v0.1.1-rc.1'}, {tag_name: 'v00.1.1'},
-    {version: ''}, {version: '0.2.0'}, {version: '0.1.1\n'},
+    {tag_name: ''}, {tag_name: 'v0.1.2-rc.1'}, {tag_name: 'v00.1.2'},
+    {version: ''}, {version: '0.2.0'}, {version: '0.1.2\n'},
     {release_created: 'TRUE'}, {id: ''}, {id: '0'}, {id: '41x'}, {draft: ''}, {draft: 'false'}, {draft: 'TRUE'}, {tag_name: '$(touch unexpected)'}]) {
     assert.notEqual(helper(context('push', 'success', outputs)).result.status, 0);
   }
