@@ -264,14 +264,14 @@ async fn strict_arguments_and_semantic_validation_never_send_a_request() {
 }
 
 #[tokio::test]
-async fn transport_request_cap_remains_64_kib() {
+async fn default_transport_request_cap_rejects_before_comment_validation_or_dispatch() {
     let upstream = upstream().await;
     let app = app(&upstream.url);
     let (status, _) = rpc(
         app,
         "tools/call",
         json!({"name":"append_issue_comment", "arguments":{
-            "issue_id":"iss-a", "body":"x".repeat(64 * 1024)
+            "issue_id":"iss-a", "body":"x".repeat(2 * 1024 * 1024)
         }}),
         "2025-11-25",
     )

@@ -777,7 +777,7 @@ async fn upstream_401_and_403_remain_mcp_tool_errors() {
 
 #[tokio::test]
 async fn mcp_request_body_limit_rejects_oversized_content_without_echoing_it() {
-    let private_body = "private-request-body".repeat(4096);
+    let private_body = "private-request-body".repeat(128 * 1024);
     let request = Request::builder()
         .method("POST")
         .uri("/mcp")

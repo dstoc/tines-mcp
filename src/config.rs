@@ -2,10 +2,14 @@ use std::{error::Error, fmt, fs, net::SocketAddr, path::PathBuf, str::FromStr, s
 
 use url::{Host, Url};
 
+use crate::tools::contract::LocalLimits;
+
 const DEFAULT_ALLOWED_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Effective ingress budget for local tool definitions and preparation.
+    pub local_limits: LocalLimits,
     pub bind_addr: SocketAddr,
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
@@ -75,10 +79,32 @@ impl Error for ConfigError {}
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
+        if matches!(
+            std::env::var("MCP_MAX_REQUEST_BYTES"),
+            Err(std::env::VarError::NotUnicode(_))
+        ) {
+            return Err(ConfigError {
+                variable: "MCP_MAX_REQUEST_BYTES",
+                reason: "must be an integer between 1 and 37748736 bytes",
+            });
+        }
         Self::from_lookup(|name| std::env::var(name).ok())
     }
 
     pub fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let local_limits = match get("MCP_MAX_REQUEST_BYTES") {
+            Some(value) => {
+                let invalid = || ConfigError {
+                    variable: "MCP_MAX_REQUEST_BYTES",
+                    reason: "must be an integer between 1 and 37748736 bytes",
+                };
+                if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(invalid());
+                }
+                LocalLimits::new(value.parse().map_err(|_| invalid())?).map_err(|_| invalid())?
+            }
+            None => LocalLimits::default(),
+        };
         let bind_addr = match get("MCP_BIND_ADDR") {
             Some(value) => SocketAddr::from_str(&value).map_err(|_| ConfigError {
                 variable: "MCP_BIND_ADDR",
@@ -175,6 +201,7 @@ impl Config {
         };
 
         Ok(Self {
+            local_limits,
             bind_addr,
             allowed_hosts,
             allowed_origins,
@@ -331,6 +358,39 @@ mod tests {
         assert_eq!(config.allowed_hosts, ["localhost", "127.0.0.1", "[::1]"]);
         assert!(config.allowed_origins.is_empty());
         assert!(config.tines.is_none());
+        assert_eq!(config.local_limits.max_request_bytes(), 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn validates_request_budget_without_tines_configuration() {
+        for (value, expected) in [
+            ("1", 1),
+            ("3145728", 3 * 1024 * 1024),
+            ("37748736", 36 * 1024 * 1024),
+        ] {
+            assert_eq!(
+                config(&[("MCP_MAX_REQUEST_BYTES", value)])
+                    .unwrap()
+                    .local_limits
+                    .max_request_bytes(),
+                expected
+            );
+        }
+        for value in [
+            "",
+            "0",
+            "37748737",
+            "-1",
+            "+1",
+            "2MiB",
+            "1.5",
+            " 42",
+            "42 ",
+            "999999999999999999999999999999",
+        ] {
+            let error = config(&[("MCP_MAX_REQUEST_BYTES", value)]).unwrap_err();
+            assert_eq!(error.variable, "MCP_MAX_REQUEST_BYTES");
+        }
     }
 
     #[test]
