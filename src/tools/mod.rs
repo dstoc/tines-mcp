@@ -1,8 +1,5 @@
-//! Registration seams for the direct-call implementation.
-//!
-//! mcp-00 registers empty module interfaces, not unfinished MCP tools. mcp-01
-//! owns dispatcher/executor wiring; feature packages only edit their own module
-//! and tests. Existing runtime tools stay in read_tools until the integration gates.
+//! Pure domain registration and one-request dispatch.
+//! Domain preparation and response projection cannot access the HTTP client.
 
 pub mod artifacts;
 pub mod context;
@@ -51,7 +48,7 @@ pub fn definitions(limits: &LocalLimits) -> Vec<Tool> {
 }
 
 /// Only definitions supplied by a module can select its preparation function.
-/// mcp-01 will invoke the executor once on the returned single call.
+/// The dispatcher invokes the executor once on the returned single call.
 pub fn prepare(
     name: &str,
     arguments: Map<String, Value>,

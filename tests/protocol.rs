@@ -27,11 +27,7 @@ use rmcp::{
     },
 };
 use serde_json::{Value, json};
-use tines_mcp::{
-    config::Config,
-    server,
-    tines::{Query, Route, TinesClient},
-};
+use tines_mcp::{config::Config, server, tines::TinesClient};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -730,13 +726,14 @@ async fn upstream_401_and_403_remain_mcp_tool_errors() {
         .expect("mock Tines config should validate locally");
         let client = TinesClient::new(config.tines.as_ref().unwrap())
             .expect("client build should not contact Tines");
-        let error = client
-            .run_tool(CancellationToken::new(), |call| async move {
-                let query = Query::new();
-                call.get_json(Route::Projects, &query).await
-            })
-            .await
-            .expect_err("upstream authorization failure should become a tool error");
+        let result = tines_mcp::tools::dispatch(
+            &client,
+            "list_projects",
+            serde_json::Map::new(),
+            &tines_mcp::tools::contract::LocalLimits::default(),
+            CancellationToken::new(),
+        )
+        .await;
 
         let request = Request::builder()
             .method("POST")
@@ -755,7 +752,7 @@ async fn upstream_401_and_403_remain_mcp_tool_errors() {
                 .to_string(),
             ))
             .expect("tool request should build");
-        let response = upstream_auth_error_app(error.to_mcp_result())
+        let response = upstream_auth_error_app(result)
             .oneshot(request)
             .await
             .expect("in-process MCP request should succeed");
@@ -764,12 +761,12 @@ async fn upstream_401_and_403_remain_mcp_tool_errors() {
         let body = response_json(response).await;
         assert_eq!(body["result"]["isError"], true);
         assert_eq!(
-            body["result"]["structuredContent"]["error"]["status"],
+            body["result"]["structuredContent"]["meta"]["http_status"],
             status
         );
         assert_eq!(
-            body["result"]["structuredContent"]["error"]["source"],
-            "upstream"
+            body["result"]["structuredContent"]["error"]["code"],
+            "access_denied"
         );
         upstream_task.abort();
     }

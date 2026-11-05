@@ -1,6 +1,9 @@
 //! Pure native context writes. Payloads never enter diagnostics or Debug output.
 
-use rmcp::{handler::server::common::schema_for_type, model::Tool};
+use rmcp::{
+    handler::server::common::schema_for_type,
+    model::{Tool, ToolAnnotations},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -206,10 +209,18 @@ pub fn definitions(limits: &LocalLimits) -> Vec<Tool> {
         limits.max_request_bytes()
     );
     vec![
-        Tool::new("create_context", format!("Create raw prompt, skill, repo, or env context with native typed fields. Artifacts use artifact tools. Omitting all scope dimensions (project_id, workflow_state_id, issue_id, label_id) creates global context; null dimensions are unset. workflow_state_id denotes a workflow state, not a workflow. Payload fields belong to their kind: prompt body; skill files; repo repo_url/repo_branch/repo_dir; env value/secret/hint. Empty text is preserved.{}", suffix), schema_for_type::<CreateContext>()).with_raw_output_schema(output.clone()),
-        Tool::new("edit_context", format!("Edit a raw context_id, not an effective context bundle. Omitted fields remain unchanged; explicit null clears nullable scope fields, repo_branch, repo_dir, or hint, subject to native scope rules. Empty text is a value. kind is immutable; artifact payloads use artifact tools. Skill files replace the entire set. Supply the observed expected_version to detect conflicts; omission retains native last-write-wins semantics. Native conflict details include the current item when within the result budget.{}", suffix), schema_for_type::<EditContext>()).with_raw_output_schema(output.clone()),
-        Tool::new("append_context", format!("Atomically append native text to a raw prompt context_id through POST /context/{{context_id}}/append. Prompt items only; the API trims append text and inserts one blank line. Supply the observed expected_version to detect conflicts; omission retains native last-write-wins semantics. Native conflict details include the current item when within the result budget. Reading a journal and appending are two explicit tool calls.{}", suffix), schema_for_type::<AppendContext>()).with_raw_output_schema(output),
+        Tool::new("create_context", format!("Create raw prompt, skill, repo, or env context with native typed fields. Artifacts use artifact tools. Omitting all scope dimensions (project_id, workflow_state_id, issue_id, label_id) creates global context; null dimensions are unset. workflow_state_id denotes a workflow state, not a workflow. Payload fields belong to their kind: prompt body; skill files; repo repo_url/repo_branch/repo_dir; env value/secret/hint. Empty text is preserved.{}", suffix), schema_for_type::<CreateContext>()).with_raw_output_schema(output.clone()).with_annotations(context_annotations(false)),
+        Tool::new("edit_context", format!("Edit a raw context_id, not an effective context bundle. Omitted fields remain unchanged; explicit null clears nullable scope fields, repo_branch, repo_dir, or hint, subject to native scope rules. Empty text is a value. kind is immutable; artifact payloads use artifact tools. Skill files replace the entire set. Supply the observed expected_version to detect conflicts; omission retains native last-write-wins semantics. Native conflict details include the current item when within the result budget.{}", suffix), schema_for_type::<EditContext>()).with_raw_output_schema(output.clone()).with_annotations(context_annotations(true)),
+        Tool::new("append_context", format!("Atomically append native text to a raw prompt context_id through POST /context/{{context_id}}/append. Prompt items only; the API trims append text and inserts one blank line. Supply the observed expected_version to detect conflicts; omission retains native last-write-wins semantics. Native conflict details include the current item when within the result budget. Reading a journal and appending are two explicit tool calls.{}", suffix), schema_for_type::<AppendContext>()).with_raw_output_schema(output).with_annotations(context_annotations(false)),
     ]
+}
+
+fn context_annotations(destructive: bool) -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(destructive)
+        .idempotent(false)
+        .open_world(true)
 }
 
 pub fn prepare(
