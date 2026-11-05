@@ -10,6 +10,7 @@ use axum::{
     http::{Request, Response},
     routing::any,
 };
+use serde_json::Map;
 use std::sync::atomic::AtomicUsize;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle, time::timeout};
 
@@ -733,5 +734,63 @@ async fn pathological_optional_metadata_and_receipt_fields_cannot_break_output_b
             huge_receipt
         );
         once(&server);
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_rejects_after_twenty_without_dispatch_and_refills() {
+    // Control the token bucket clock without pausing real socket I/O.
+    let mut server = mock(200, br#"{"id":"returned"}"#.to_vec()).await;
+    for _ in 0..20 {
+        server
+            .client
+            .inner
+            .rate_limit
+            .bucket
+            .lock()
+            .unwrap()
+            .last_updated = Instant::now() + Duration::from_secs(60);
+        let value = execute(&server, plan(d::Method::Get)).await;
+        assert!(value.get("error").is_none());
+        server.rx.recv().await.unwrap();
+    }
+    let rejected = execute(&server, plan(d::Method::Post)).await;
+    assert_eq!(rejected["error"]["code"], "rate_limited");
+    assert_eq!(rejected["meta"]["write"]["outcome"], "not_attempted");
+    assert_eq!(server.count.load(Ordering::SeqCst), 20);
+    server
+        .client
+        .inner
+        .rate_limit
+        .bucket
+        .lock()
+        .unwrap()
+        .last_updated = Instant::now() - Duration::from_secs(1);
+    let value = execute(&server, plan(d::Method::Get)).await;
+    assert!(value.get("error").is_none());
+    assert_eq!(server.count.load(Ordering::SeqCst), 21);
+}
+
+#[test]
+fn complete_result_budget_counts_escaping_and_both_representations() {
+    for text in ["a", "\"\\\n"] {
+        let render = |size| mcp_result(json!({"data":text.repeat(size)}), false);
+        let mut low = 0;
+        let mut high = d::MAX_RESULT_BYTES;
+        while low + 1 < high {
+            let middle = (low + high) / 2;
+            if serialized_size(&render(middle)) <= d::MAX_RESULT_BYTES {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        let result = render(low);
+        assert_eq!(
+            serialized_size(&result),
+            serde_json::to_vec(&result).unwrap().len()
+        );
+        assert!(serialized_size(&result) <= d::MAX_RESULT_BYTES);
+        assert!(serialized_size(&render(high)) > d::MAX_RESULT_BYTES);
     }
 }

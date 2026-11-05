@@ -2,23 +2,31 @@
 
 Versioned image preparation, verification, and recovery: [release guide](docs/releases.md).
 
-**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data, and create issues, edit issue prose, and append issue comments. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
+**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data, and manage issue content, workflow decisions, labels, dependencies, artifacts, context, and operational recovery. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
 
 ## Available tools
 
-The service provides these read and issue-content tools:
+The service advertises 41 implemented tools. See the complete [tool inventory](docs/tool-inventory.md) for endpoints, schemas, annotations and operation limits. The [full-surface acceptance record](docs/acceptance/full-surface.md) distinguishes automated checks from deployment evidence.
+
+Available tools:
 
 - **list_projects** and **get_project**
 - **list_issues** and **get_issue**
 - **create_issue**, **edit_issue**, and **append_issue_comment**
+- **transition_issue**, **get_issue_consent**, and **get_current_api_key_authority**
+- **add_issue_labels**, **remove_issue_label**, **add_issue_link**, and **remove_issue_link**
 - **list_issue_artifacts**, **get_issue_artifact**, and **read_artifact_content**
+- **put_issue_artifact**, **reaffirm_issue_artifact**, and **upload_issue_artifact_file**
 - **list_workflows** and **get_workflow**
 - **list_labels**
 - **list_events** for on-demand activity reads
 - **list_context** and **get_context** for raw context items
+- **create_context**, **edit_context**, and **append_context** for raw context writes
 - **get_issue_context** for effective context, including inherited parts
 - **get_issue_journal** for the applicable guidance journal and its anchor
 - **list_runs**, **get_run**, **get_run_log**, and **explain_dispatch** for run history, logs, and dispatch explanations
+- **list_runners**, **get_runner**, **get_supervisor_queue**, and **get_supervisor_settings**
+- **resume_issue** and **cancel_run** for explicit recovery operations
 
 **get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response preserves the current project attribution after an issue moves.
 
@@ -30,7 +38,7 @@ The append is non-idempotent: repeating it can create another comment. The servi
 
 **edit_issue** requires **issue_id** and at least one of **title** or **description**. Omitted fields remain unchanged; an empty description clears it. It cannot change state, workflow, scheduling, or runner pins. Titles have a 500 UTF-16-unit limit and descriptions have a 100,000-unit limit. Both tools send prose verbatim; Tines trims titles. Native prose edits have no revision witness or compare-and-swap guarantee.
 
-Issue-content results use **meta.write.outcome** to report write evidence:
+Mutation results use **meta.write.outcome** to report write evidence:
 
 | Value | Meaning |
 | --- | --- |
@@ -81,7 +89,7 @@ curl -i http://127.0.0.1:8080/healthz
 
 The health endpoint returns `204 No Content`. It does not contact Tines or validate an upstream token.
 
-The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. The configured token can read data, create issues, edit issue prose, and append comments through these tools. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
+The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. The configured token can read and mutate issues, transitions, relations, artifacts and context, and request recovery through these tools. Use a token whose native authority matches the intended operations. Personal execution consent cannot be granted through MCP. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
 
 The default Host allowlist permits loopback hosts. Browser requests with an `Origin` header are rejected unless that exact origin is configured. Host and Origin checks limit unintended requests, but they are not authentication.
 
@@ -126,7 +134,7 @@ The process handles `SIGTERM` and stops accepting requests gracefully. The examp
 | `TINES_BASE_URL` | Unset | Tines origin. HTTPS is required except for an explicitly enabled loopback HTTP origin. Required when any Tines setting is supplied. |
 | `TINES_API_TOKEN_FILE` | Unset | Path to a readable, non-empty token file. Set exactly one token source. |
 | `TINES_API_TOKEN` | Unset | Token from the environment. Set exactly one token source. |
-| `TINES_WEB_URL` | `TINES_BASE_URL` | Optional HTTPS origin for browser links. |
+| `TINES_WEB_URL` | `TINES_BASE_URL` | Optional web origin, validated for compatibility; tool links use root-relative application paths. |
 | `TINES_ALLOW_HTTP` | `false` | Allows an HTTP Tines origin only when it resolves to loopback. |
 
 Remove `TINES_EXCLUDED_PROJECT_IDS` from existing deployments. This setting is no longer read and has no effect. Configure project restrictions on the Tines token before upgrading if the deployment relied on adapter exclusions.
@@ -208,17 +216,26 @@ Start the replacement adapter and recreate `tunnel-client` with `--network conta
 
 The tunnel controls access to its endpoint. It does not add authentication to this MCP server or reduce the permissions of its configured Tines token. Host and Origin validation are additional request checks, not an access-control boundary.
 
-The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration, read behavior, and comment appends. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 5. This repository has not performed that end-to-end check.
+The local Rust tests use mock Tines endpoints and fixtures to check adapter configuration and all implemented tool domains. They need no live Tines token, tunnel, or MCP client. A deployment acceptance check requires a live tunnel and the intended MCP client to complete the safe read in step 5. This repository has not performed that end-to-end check.
 
 ## Runtime limits
 
 - Each Tines tool call has a 45-second deadline and a 5-second connection timeout.
-- The process admits up to four concurrent tool calls and eight concurrent upstream requests. It rate-limits calls to 10 per second with a burst of 20. Excess work is rejected instead of queued, and upstream requests are not retried automatically.
-- MCP POST bodies are limited to 2 MiB by default. Set `MCP_MAX_REQUEST_BYTES` to change the limit, up to 36 MiB. The limit applies to both declared and streamed bodies. Oversized requests return HTTP 413. At most four POST requests are admitted before body buffering; excess requests return HTTP 503. Body reading has a total 30-second deadline and returns HTTP 408 on timeout. GET streams do not consume POST admission permits. Raising this budget increases memory use for encoded input and parsed data; client and tunnel limits still apply. Tines JSON responses are limited to 32 MiB; upstream error bodies are limited to 8 KiB.
+- The process admits up to four concurrent tool calls. Each call sends at most one upstream request. It rate-limits calls to 10 per second with a burst of 20. Excess work is rejected instead of queued, and upstream requests are not retried automatically.
+- MCP POST bodies are limited to 2 MiB by default. Set `MCP_MAX_REQUEST_BYTES` to change the limit, up to 36 MiB. The limit applies to both declared and streamed bodies. Oversized requests return HTTP 413. At most four POST requests are admitted before body buffering; excess requests return HTTP 503. Body reading has a total 30-second deadline and returns HTTP 408 on timeout. GET streams do not consume POST admission permits. Raising this budget increases memory use for encoded input and parsed data; client and tunnel limits still apply. Tines JSON responses are limited to 32 MiB; upstream error bodies are limited to 1 MiB.
+- Uploads accept inline UTF-8 or canonical padded standard base64, with a 25 MiB decoded native file cap. The serialized request budget can reduce usable upload size. Inline content and log reads retain a separate 1 MiB source cap and return at most 32 KiB per chunk; raising the upload budget does not raise either read limit.
 - The complete serialized MCP tool result is limited to 512 KiB. Validated direct-call successes retain a bounded receipt and an explicit omission notice when native data does not fit. Unvalidated oversized responses return an error.
 - The service stores no Tines data, performs no background polling, and requires no writable data volume. `/healthz` reports process liveness only.
 
 ## Checks
+
+Run all three integration gates together without live credentials:
+
+```sh
+cargo test --locked --test issue_workflow_acceptance --test artifact_acceptance --test context_recovery_acceptance --test full_surface
+```
+
+Ignored native scenarios remain unrun. These suites do not verify the intended client/tunnel path. See the [acceptance record](docs/acceptance/full-surface.md) for evidence and remaining operator checks.
 
 Run the same checks as CI:
 
