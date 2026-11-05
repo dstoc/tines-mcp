@@ -586,6 +586,35 @@ class GitSourceTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_ephemeral_docker_configuration_and_cleanup(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        steps = workflow.split("    steps:\n", 1)[1]
+        initialize, *_, cleanup = steps.split("      - name: ")[1:]
+        self.assertTrue(initialize.startswith("Initialize ephemeral Docker configuration\n"))
+        self.assertTrue(cleanup.startswith("Remove ephemeral registry login\n"))
+        self.assertIn("if: always()", cleanup)
+        initialize_command = re.search(r"^        run: (.*)$", initialize, re.M)[1]
+        cleanup_command = re.search(r"^        run: (.*)$", cleanup, re.M)[1]
+        with tempfile.TemporaryDirectory(prefix="release runner ") as directory:
+            runner_temp = Path(directory)
+            github_env = runner_temp / "github-env"
+            config = runner_temp / "release-docker"
+            unrelated = runner_temp / "unrelated"
+            unrelated.write_text("keep")
+            env = dict(os.environ, RUNNER_TEMP=str(runner_temp), GITHUB_ENV=str(github_env))
+            env.pop("DOCKER_CONFIG", None)
+            # Cleanup also works if the initialization step did not complete.
+            subprocess.run(["bash", "-e", "-c", cleanup_command], env=env, check=True)
+            subprocess.run(["bash", "-e", "-c", initialize_command], env=env, check=True)
+            self.assertEqual(github_env.read_text(), f"DOCKER_CONFIG={config}\n")
+            # Actions exports GITHUB_ENV to every later step, including attestation actions.
+            env["DOCKER_CONFIG"] = str(config)
+            config.mkdir()
+            (config / "config.json").write_text('{"auths":{"ghcr.io":{"auth":"test-only"}}}')
+            subprocess.run(["bash", "-e", "-c", cleanup_command], env=env, check=True)
+            self.assertFalse(config.exists())
+            self.assertEqual(unrelated.read_text(), "keep")
+
     def test_authority_and_execution_boundaries(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
