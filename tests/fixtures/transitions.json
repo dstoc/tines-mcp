@@ -1,0 +1,377 @@
+{
+  "reference_revision": "af6cb25febf1b45d7eff32251f78fcf6355aed4a",
+  "notes": "Representative native response projections, not full IssueDetail dumps. Native field hierarchy, missing/null distinctions and errors are pinned to the reference sources. No live permission or executor claim.",
+  "responses": [
+    {
+      "name": "private_owner",
+      "tool": "transition_issue",
+      "source": "apps/web/src/lib/server/api/issues.ts:2662",
+      "data": {
+        "id": "iss_native",
+        "number": 19,
+        "title": "Review proposal",
+        "description": null,
+        "state": {
+          "id": "wfs_check",
+          "name": "Check",
+          "category": "active"
+        },
+        "decision_revision": 12,
+        "workflow_revision": 7,
+        "artifacts": [],
+        "project_id": "prj_private",
+        "project_name": "private",
+        "active_run": null,
+        "workflow": {
+          "id": "wf_implementation",
+          "revision": 91
+        },
+        "allowed_transitions": []
+      }
+    },
+    {
+      "name": "shared_owner",
+      "tool": "transition_issue",
+      "source": "apps/web/src/lib/server/api/issues.ts:2663-2673",
+      "data": {
+        "id": "iss_native",
+        "number": 19,
+        "title": "Review proposal",
+        "description": null,
+        "state": {
+          "id": "wfs_check",
+          "name": "Check",
+          "category": "active"
+        },
+        "decision_revision": 12,
+        "workflow_revision": 7,
+        "artifacts": [],
+        "project_id": "prj_shared",
+        "project_name": "shared",
+        "active_run": null,
+        "workflow": {
+          "id": "wf_implementation",
+          "revision": 91
+        },
+        "allowed_transitions": [],
+        "permission_receipt": {
+          "actor": "key",
+          "project": {
+            "id": "prj_shared",
+            "sharing_revision": 3
+          },
+          "issue_state": {
+            "id": "wfs_check",
+            "category": "active",
+            "decision_revision": 12,
+            "workflow_revision": 7
+          },
+          "agent_hold": {
+            "held": false,
+            "revision": 2
+          },
+          "my_agents": {
+            "value": "unset",
+            "source": null,
+            "revision": 0,
+            "epoch": 4
+          },
+          "readiness": "eligible",
+          "admitted_run": null,
+          "committed_atomically": true,
+          "message": "Permission unchanged; manage your permission in the browser."
+        }
+      }
+    },
+    {
+      "name": "shared_member",
+      "tool": "transition_issue",
+      "source": "apps/web/src/lib/server/api/shared-issues.ts:284-375",
+      "data": {
+        "id": "iss_native",
+        "number": 19,
+        "title": "Review proposal",
+        "description": null,
+        "state": {
+          "id": "wfs_check",
+          "name": "Check",
+          "category": "active"
+        },
+        "decision_revision": 12,
+        "workflow_revision": 7,
+        "artifacts": [],
+        "mode": "member",
+        "viewer_role": "member",
+        "project": {
+          "id": "prj_shared",
+          "name": "shared",
+          "owner": {
+            "id": "usr_owner",
+            "name": "Owner"
+          },
+          "archived_at": null
+        },
+        "workflow": {
+          "id": "wf_implementation",
+          "name": "Implementation",
+          "states": [],
+          "transitions": []
+        },
+        "my_choice": {
+          "value": "off",
+          "revision": 5,
+          "epoch": 4,
+          "source": "explicit_issue"
+        },
+        "latest_run": null,
+        "capabilities": {
+          "read": true,
+          "comment": true,
+          "decide": true,
+          "personal_permission": true,
+          "execute": false
+        }
+      }
+    },
+    {
+      "name": "authority",
+      "tool": "get_current_api_key_authority",
+      "source": "apps/web/src/lib/server/api/apikeys.ts:363-389",
+      "data": {
+        "key": {
+          "id": "key_fixture",
+          "name": "restricted"
+        },
+        "authority": {
+          "stored_permissions": {
+            "version": 1,
+            "projects": {
+              "access": "delete",
+              "scope": "all"
+            },
+            "workspace": "delete",
+            "control_plane": "delete"
+          },
+          "effective_permissions": {
+            "version": 1,
+            "projects": {
+              "access": "delete",
+              "scope": [
+                "prj_shared"
+              ]
+            },
+            "workspace": "write",
+            "control_plane": "read"
+          },
+          "run_restrictions": {
+            "policy": "run-v1",
+            "run_id": "arun_fixture",
+            "issue_id": "iss_native",
+            "project_id": "prj_shared",
+            "launch_state_id": "wfs_implement",
+            "scope": "issue"
+          },
+          "usable": true
+        }
+      }
+    },
+    {
+      "name": "authority_session",
+      "tool": "get_current_api_key_authority",
+      "source": "apps/web/src/lib/server/api/apikeys.ts:363-389",
+      "data": {
+        "key": null,
+        "authority": {
+          "stored_permissions": {
+            "version": 1,
+            "projects": {
+              "access": "delete",
+              "scope": "all"
+            },
+            "workspace": "delete",
+            "control_plane": "delete"
+          },
+          "effective_permissions": {
+            "version": 1,
+            "projects": {
+              "access": "delete",
+              "scope": "all"
+            },
+            "workspace": "delete",
+            "control_plane": "delete"
+          },
+          "run_restrictions": null,
+          "usable": true
+        }
+      }
+    },
+    {
+      "name": "owner_consent",
+      "tool": "get_issue_consent",
+      "source": "apps/web/src/lib/server/api/personal-consent.ts:196-233",
+      "data": {
+        "actor": "owner",
+        "project": {
+          "id": "prj_shared",
+          "sharing_revision": 3
+        },
+        "issue_state": {
+          "id": "wfs_check",
+          "category": "active",
+          "decision_revision": 12,
+          "workflow_revision": 7
+        },
+        "agent_hold": {
+          "held": false,
+          "revision": 2
+        },
+        "my_agents": {
+          "value": "unset",
+          "source": null,
+          "revision": 0,
+          "epoch": 4
+        },
+        "readiness": "eligible",
+        "admitted_run": null,
+        "committed_atomically": true
+      }
+    },
+    {
+      "name": "member_consent",
+      "tool": "get_issue_consent",
+      "source": "apps/web/src/lib/server/api/personal-consent.ts:196-233",
+      "data": {
+        "actor": "member",
+        "project": {
+          "id": "prj_shared",
+          "sharing_revision": 3
+        },
+        "issue_state": {
+          "id": "wfs_check",
+          "category": "active",
+          "decision_revision": 12,
+          "workflow_revision": 7
+        },
+        "agent_hold": {
+          "held": false,
+          "revision": 2
+        },
+        "my_agents": {
+          "value": "off",
+          "source": "explicit_issue",
+          "revision": 5,
+          "epoch": 4
+        },
+        "readiness": "unavailable",
+        "admitted_run": null,
+        "committed_atomically": true,
+        "message": "Permission saved. Member execution is not available in this release; only the owner’s approved agents can run."
+      }
+    }
+  ],
+  "errors": [
+    {
+      "tool": "transition_issue",
+      "status": 409,
+      "source": "apps/web/src/lib/server/api/issues.ts:2368-2420",
+      "error": {
+        "code": "decision_refresh_required",
+        "message": "Issue permission or workflow changed; refresh and choose again",
+        "details": {
+          "committed": false,
+          "current_state_id": "wfs_check",
+          "current_decision_revision": 12,
+          "current_consent_revision": 5,
+          "current_consent_epoch": 4,
+          "current_workflow_revision": 7,
+          "remedy": "refresh_issue"
+        }
+      }
+    },
+    {
+      "tool": "transition_issue",
+      "status": 409,
+      "source": "apps/web/src/lib/server/api/issues.ts:2091-2112",
+      "error": {
+        "code": "decision_refresh_required",
+        "message": "Issue or permission changed; refresh and choose again",
+        "details": {
+          "committed": false
+        }
+      }
+    },
+    {
+      "tool": "transition_issue",
+      "status": 422,
+      "source": "apps/web/src/lib/server/api/issues.ts:2059-2075 (representative unmet entry)",
+      "error": {
+        "code": "transition_requirements_unmet",
+        "message": "Transition \"Request Review\" requires a fresh artifact \"pr\" (pr). Attach it (or a new version), then retry the same transition.",
+        "details": {
+          "transition": {
+            "name": "Request Review",
+            "to_state": "Check"
+          },
+          "state_entered_at": 123456,
+          "unmet": [
+            {
+              "artifact": "pr",
+              "type": "pr",
+              "status": "missing",
+              "current_version": null,
+              "current_type": null,
+              "fix": "tines issues artifacts attach shared/19 pr <owner/repo#N>"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tool": "transition_issue",
+      "status": 422,
+      "source": "apps/web/src/lib/server/api/issues.ts:2139-2145",
+      "error": {
+        "code": "transition_requirements_unmet",
+        "message": "Required artifact is missing or stale",
+        "details": {
+          "committed": false
+        }
+      }
+    },
+    {
+      "tool": "get_issue_consent",
+      "status": 409,
+      "source": "apps/web/src/lib/server/api/personal-consent.ts:180-185",
+      "error": {
+        "code": "consent_mode_required",
+        "message": "Personal permission is available after project sharing begins"
+      }
+    },
+    {
+      "tool": "get_issue_consent",
+      "status": 403,
+      "source": "apps/web/src/routes/api/v1/issues/[id]/my-consent/+server.ts:12; apps/web/src/lib/server/api/core.ts:340",
+      "error": {
+        "code": "run_key_forbidden",
+        "message": "Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, cannot create, edit or delete env context items, cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and applying other existing labels is fine). Propose the change instead: file an issue titled \"Context change: <scope label>\" describing what should change and why; a human reviews and applies it.",
+        "details": {
+          "operation": "issue.consent.read"
+        }
+      }
+    },
+    {
+      "tool": "transition_issue",
+      "status": 403,
+      "source": "apps/web/src/lib/server/api/permissions.ts:216-220",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue.transition",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    }
+  ]
+}
