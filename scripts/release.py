@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatch-only GHCR release checks. No registry errors mean absence in normal mode."""
+"""GHCR release checks. No registry errors mean absence in normal mode."""
 
 import argparse
 import http.client
@@ -93,8 +93,9 @@ def confirmation(sha):
 
 def dispatch(env):
     require(env.get("GITHUB_REPOSITORY") == REPO, "Wrong repository")
-    require(env.get("GITHUB_EVENT_NAME") == "workflow_dispatch", "Dispatch only")
-    require(env.get("GITHUB_REF") == "refs/heads/main", "Dispatch from main")
+    event = env.get("GITHUB_EVENT_NAME")
+    require(event in ("workflow_dispatch", "push"), "Use main push handoff or explicit dispatch")
+    require(env.get("GITHUB_REF") == "refs/heads/main", "Release from main")
     require(re.fullmatch(SHA, env.get("GITHUB_SHA", "")), "Invalid workflow SHA")
     tag, sha = env.get("RELEASE_TAG", ""), env.get("RELEASE_SOURCE", "")
     require(re.fullmatch(TAG, tag), "Use a stable vX.Y.Z tag without leading zeroes")
@@ -102,6 +103,11 @@ def dispatch(env):
     mode = env.get("RELEASE_MODE", "normal")
     require(mode in ("normal", "bootstrap"), "Invalid publication mode")
     given = env.get("BOOTSTRAP_CONFIRMATION", "")
+    if event == "push":
+        require(env.get("RELEASE_PLEASE_RESULT") == "success"
+                and env.get("RELEASE_CREATED") == "true", "Successful release-created handoff required")
+        require(env.get("RELEASE_VERSION") == tag[1:], "Release Please tag/version mismatch")
+        require(mode == "normal", "Automatic publication is normal mode only")
     if mode == "bootstrap":
         require(tag == "v0.1.0", "Bootstrap is limited to v0.1.0")
         require(env.get("GITHUB_ACTOR_ID") == "539597"

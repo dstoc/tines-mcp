@@ -1,6 +1,8 @@
 name: release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -30,8 +32,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-please:
+    if: github.repository == 'dstoc/tines-mcp' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - name: Maintain reviewed Rust release PR and create source release after merge
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   release:
-    if: github.repository == 'dstoc/tines-mcp' && github.ref == 'refs/heads/main'
+    needs: release-please
+    # Dispatch must work when release-please is skipped; failed/cancelled jobs never authorize a push.
+    if: >-
+      !cancelled() && github.repository == 'dstoc/tines-mcp' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && needs.release-please.result == 'success' &&
+        needs.release-please.outputs.release_created == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -41,10 +72,13 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ inputs.tag }}
-      RELEASE_SOURCE: ${{ inputs.source_sha }}
-      RELEASE_MODE: ${{ inputs.mode }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && needs.release-please.outputs.tag_name || inputs.tag }}
+      RELEASE_SOURCE: ${{ github.event_name == 'push' && needs.release-please.outputs.sha || inputs.source_sha }}
+      RELEASE_MODE: ${{ github.event_name == 'push' && 'normal' || inputs.mode }}
       BOOTSTRAP_CONFIRMATION: ${{ inputs.bootstrap_confirmation }}
+      RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
+      RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+      RELEASE_PLEASE_RESULT: ${{ needs.release-please.result }}
     steps:
       - name: Initialize ephemeral Docker configuration
         run: printf 'DOCKER_CONFIG=%s/release-docker\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
@@ -55,7 +89,7 @@ jobs:
           path: workflow
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate dispatch, source tag and ancestry
+      - name: Validate release handoff, source tag and ancestry
         id: source
         run: python3 workflow/scripts/release.py resolve --workflow workflow --source source --record release/record.json
       - name: Check out the exact application source separately
