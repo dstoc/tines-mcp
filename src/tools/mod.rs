@@ -87,3 +87,62 @@ fn prepare_in(
 #[cfg(test)]
 #[path = "registration_tests.rs"]
 mod registration_tests;
+
+/// Dispatch an advertised domain tool through pure preparation and the sole
+/// executor. Integrations can use this entry point without owning shared wiring.
+pub async fn dispatch(
+    client: &crate::tines::TinesClient,
+    name: &str,
+    arguments: Map<String, Value>,
+    limits: &LocalLimits,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> rmcp::model::CallToolResult {
+    dispatch_in(MODULES, client, name, arguments, limits, cancellation).await
+}
+
+pub(crate) async fn dispatch_in(
+    modules: &[Module],
+    client: &crate::tines::TinesClient,
+    name: &str,
+    arguments: Map<String, Value>,
+    limits: &LocalLimits,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> rmcp::model::CallToolResult {
+    match prepare_in(modules, name, arguments, limits) {
+        Ok(plan) => client.execute_prepared(plan, cancellation).await,
+        Err(error) => {
+            // An advertised mutation rejected during local preparation was never
+            // attempted. Unknown tools have no selected operation to classify.
+            let write = modules
+                .iter()
+                .flat_map(|m| (m.definitions)(limits))
+                .find(|tool| tool.name == name)
+                .is_some_and(|tool| {
+                    tool.annotations.as_ref().and_then(|a| a.read_only_hint) != Some(true)
+                });
+            client.direct_result(contract::ResultEnvelope {
+                data: Value::Null,
+                error: Some(contract::ResultError {
+                    code: error.code.into(),
+                    message: error.message,
+                    details: error.field.map(|field| serde_json::json!({"field": field})),
+                }),
+                meta: contract::ResultMeta {
+                    http_status: None,
+                    observed_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis(),
+                    omissions: vec![],
+                    links: vec![],
+                    retry_after: None,
+                    write: write.then_some(contract::WriteInfo {
+                        outcome: contract::WriteOutcome::NotAttempted,
+                        committed: None,
+                        receipt: None,
+                    }),
+                },
+            })
+        }
+    }
+}
