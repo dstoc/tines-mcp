@@ -20,7 +20,7 @@ The service provides nineteen read-only tools and one append tool:
 
 **get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response preserves the current project attribution after an issue moves.
 
-**append_issue_comment** requires **issue_id** and **body**. It preserves the body verbatim and accepts nonblank text up to 100,000 JavaScript UTF-16 code units, subject to the unchanged 64 KiB serialized MCP request limit. It uses the configured Tines token and normal API permissions. It verifies the issue identity before sending the append. The result includes the native comment object and an issue link when available.
+**append_issue_comment** requires **issue_id** and **body**. It preserves the body verbatim and accepts nonblank text up to 100,000 JavaScript UTF-16 code units, subject to the configured serialized MCP request limit (2 MiB by default). It uses the configured Tines token and normal API permissions. It verifies the issue identity before sending the append. The result includes the native comment object and an issue link when available.
 
 The append is non-idempotent: repeating it can create another comment. The service never retries it automatically. If the outcome is unknown, inspect the issue before deciding whether to append again. Losing or canceling the client response does not undo a committed comment. The tool provides no exactly-once guarantee and cannot edit or delete comments.
 
@@ -113,6 +113,7 @@ The process handles `SIGTERM` and stops accepting requests gracefully. The examp
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MCP_BIND_ADDR` | `127.0.0.1:8080` | Listener address. |
+| `MCP_MAX_REQUEST_BYTES` | `2097152` (2 MiB) | Maximum serialized JSON-RPC HTTP body in bytes, including JSON escaping, metadata, and the envelope. Must be an integer from 1 through `37748736` (36 MiB). |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated Host allowlist. Entries can include a port. |
 | `MCP_ALLOWED_ORIGINS` | Empty | Comma-separated exact browser origins. An empty list rejects every present `Origin` header. |
 | `TINES_BASE_URL` | Unset | Tines origin. HTTPS is required except for an explicitly enabled loopback HTTP origin. Required when any Tines setting is supplied. |
@@ -206,7 +207,7 @@ The local Rust tests use mock Tines endpoints and fixtures to check adapter conf
 
 - Each Tines tool call has a 45-second deadline and a 5-second connection timeout.
 - The process admits up to four concurrent tool calls and eight concurrent upstream requests. It rate-limits calls to 10 per second with a burst of 20. Excess work is rejected instead of queued, and upstream requests are not retried automatically.
-- MCP request bodies are limited to 64 KiB. Tines JSON responses are limited to 32 MiB; upstream error bodies are limited to 8 KiB.
+- MCP POST bodies are limited to 2 MiB by default. Set `MCP_MAX_REQUEST_BYTES` to change the limit, up to 36 MiB. The limit applies to both declared and streamed bodies. Oversized requests return HTTP 413. At most four POST requests are admitted before body buffering; excess requests return HTTP 503. Body reading has a total 30-second deadline and returns HTTP 408 on timeout. GET streams do not consume POST admission permits. Raising this budget increases memory use for encoded input and parsed data; client and tunnel limits still apply. Tines JSON responses are limited to 32 MiB; upstream error bodies are limited to 8 KiB.
 - The complete serialized MCP tool result is limited to 512 KiB. Oversized results return an error instead of a truncated success.
 - The service stores no Tines data, performs no background polling, and requires no writable data volume. `/healthz` reports process liveness only.
 
