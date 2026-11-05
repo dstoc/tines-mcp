@@ -1,0 +1,1115 @@
+{
+  "version": 1,
+  "reference_revision": "af6cb25febf1b45d7eff32251f78fcf6355aed4a",
+  "proposal": "docs/proposals/direct-api-mcp.md",
+  "status": "Contract catalog only; not an advertised surface or HTTP integration claim.",
+  "rules": {
+    "paths": "Relative to /api/v1. Domain modules own endpoint templates; this fixture is evidence, not runtime dispatch.",
+    "responses": "Native objects stay extensible. Required receipt paths must be validated; optional paths are copied only if present and valid. Nested paths preserve their native hierarchy. Endpoint projectors validate their response shapes in their own packages.",
+    "writes": "After dispatch, errors are unknown unless explicit native committed evidence or an exact endpoint-specific tested noncommitting rule establishes otherwise. Unclassified 4xx/5xx/redirect/parse/cancellation/size failures are unknown. Do not infer rejected from status alone.",
+    "noncommitting": "Rules require exact status+code and a pinned native test proving unchanged resource/events. Explicit native committed evidence takes precedence and stays separate from meta.write.outcome.",
+    "empty": "An expected 204 is its own validated success receipt; never invent returned IDs.",
+    "optional": "Missing optional request fields are omitted. Nullable PATCH fields use Missing/Null/Value; non-null fields reject null. Native missing/null response fields are preserved.",
+    "projection": "Success receipt extraction precedes optional projection enrichment and serialized MCP result budgeting. Validated write success overflow has data:null, isError:false, compact receipt and explicit omission."
+  },
+  "endpoints": [
+    {
+      "tool": "list_projects",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/projects",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<Project>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_project",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/projects/{project_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "Project"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_issues",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<IssueListItem>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_issue",
+      "variant": "id",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueDetail | shared-member projection"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_issue",
+      "variant": "project_number",
+      "module": "reads",
+      "method": "GET",
+      "path": "/projects/{project_id}/issues/{number}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueDetail | shared-member projection"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_issue_artifacts",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}/artifacts",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ArtifactListResponse"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_issue_artifact",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}/artifacts/{name}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ArtifactDetail"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "read_artifact_content",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}/artifacts/{name}/content",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "bytes",
+        "native_shape": "bytes"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop.",
+        "Omitted version selects current at request time; optional path selects a folder file. No expected_artifact_id, resolved-version claim or metadata fetch. Digest continuations preserve selectors."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_workflows",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/workflows",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<WorkflowResponse>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_workflow",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/workflows/{workflow_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "WorkflowResponse"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_labels",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/labels",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "{ items: LabelWithUsage[] }"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_events",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/events",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<Event>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_context",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/context",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<ContextItem>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_context",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/context/{context_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ContextItem"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_issue_context",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}/context",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueContextResponse"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_issue_journal",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}/journal",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueJournalResponse"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_runs",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/runs",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<AgentRun>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_run",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/runs/{run_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "AgentRunDetail"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_run_log",
+      "variant": "tail",
+      "module": "reads",
+      "method": "GET",
+      "path": "/runs/{run_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "AgentRunDetail"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop.",
+        "Full mode preserves 404/410/503; no tail fallback. Metadata comes only from the selected response."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_run_log",
+      "variant": "full",
+      "module": "reads",
+      "method": "GET",
+      "path": "/runs/{run_id}/log",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "bytes",
+        "native_shape": "bytes"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop.",
+        "Full mode preserves 404/410/503; no tail fallback. Metadata comes only from the selected response."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "explain_dispatch",
+      "variant": "default",
+      "module": "reads",
+      "method": "GET",
+      "path": "/issues/{issue_id}/dispatch",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "DispatchExplanation"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native optional, null, redacted and unknown fields. No parent lookup or pagination loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "create_issue",
+      "variant": "default",
+      "module": "issues",
+      "method": "POST",
+      "path": "/projects/{project_id}/issues",
+      "body": "json",
+      "success": {
+        "statuses": [
+          201
+        ],
+        "kind": "json",
+        "native_shape": "IssueDetail | shared-member projection"
+      },
+      "receipt": {
+        "required": [
+          "/id"
+        ],
+        "optional": [
+          "/project_id",
+          "/project/id",
+          "/number",
+          "/state/id",
+          "/decision_revision",
+          "/workflow_revision",
+          "/active_run",
+          "/permission_receipt"
+        ]
+      },
+      "semantics": [
+        "Omit unsupplied native optional fields. Never transition or resume. An initial state can be active. No title/description CAS guarantee."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "edit_issue",
+      "variant": "default",
+      "module": "issues",
+      "method": "PATCH",
+      "path": "/issues/{issue_id}",
+      "body": "json",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueDetail | shared-member projection"
+      },
+      "receipt": {
+        "required": [
+          "/id"
+        ],
+        "optional": [
+          "/project_id",
+          "/project/id",
+          "/number",
+          "/state/id",
+          "/decision_revision",
+          "/workflow_revision",
+          "/active_run",
+          "/permission_receipt"
+        ]
+      },
+      "semantics": [
+        "Only supplied title/description fields; at least one. Omitted fields are unchanged. No native title/description revision witness."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "append_issue_comment",
+      "variant": "default",
+      "module": "issues",
+      "method": "POST",
+      "path": "/issues/{issue_id}/comments",
+      "body": "json",
+      "success": {
+        "statuses": [
+          201
+        ],
+        "kind": "json",
+        "native_shape": "Comment"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/issue_id"
+        ],
+        "optional": [
+          "/created_at"
+        ]
+      },
+      "semantics": [
+        "Validate returned immutable comment and issue IDs. Body is verbatim, nonblank and <=100000 JavaScript UTF-16 units. A post-insert read can fail; HTTP status alone does not establish rejection."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "transition_issue",
+      "variant": "default",
+      "module": "transitions",
+      "method": "POST",
+      "path": "/issues/{issue_id}/transition",
+      "body": "json",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueDetail | shared-member projection"
+      },
+      "receipt": {
+        "required": [
+          "/id"
+        ],
+        "optional": [
+          "/project_id",
+          "/project/id",
+          "/number",
+          "/state/id",
+          "/decision_revision",
+          "/workflow_revision",
+          "/active_run",
+          "/permission_receipt"
+        ]
+      },
+      "semantics": [
+        "Exactly one action/transition_id. Omit unsupplied witnesses; preserve all supplied witnesses. Shared named-key calls require exact transition_id and all five witnesses. Never refresh."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_current_api_key_authority",
+      "variant": "default",
+      "module": "transitions",
+      "method": "GET",
+      "path": "/api-keys/current",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "{ key: { id, name } | null, authority: ApiKeyAuthority }"
+      },
+      "receipt": null,
+      "semantics": [],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_issue_consent",
+      "variant": "default",
+      "module": "transitions",
+      "method": "GET",
+      "path": "/issues/{issue_id}/my-consent",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueConsentReceipt"
+      },
+      "receipt": null,
+      "semantics": [],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "add_issue_labels",
+      "variant": "default",
+      "module": "relations",
+      "method": "POST",
+      "path": "/issues/{issue_id}/labels",
+      "body": "json",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "AddIssueLabelsResponse"
+      },
+      "receipt": {
+        "required": [
+          "/labels",
+          "/added",
+          "/created"
+        ],
+        "optional": []
+      },
+      "semantics": [
+        "Map label_ids to labels. Require existing lbl_ IDs. Empty added/created arrays are valid native no-op receipts."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "remove_issue_label",
+      "variant": "default",
+      "module": "relations",
+      "method": "DELETE",
+      "path": "/issues/{issue_id}/labels/{label_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          204
+        ],
+        "kind": "empty",
+        "native_shape": "empty"
+      },
+      "receipt": {
+        "required": [],
+        "optional": []
+      },
+      "semantics": [
+        "Expected 204 confirms removal/no-op. Input IDs alone are not response evidence."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "add_issue_link",
+      "variant": "default",
+      "module": "relations",
+      "method": "POST",
+      "path": "/issues/{issue_id}/links",
+      "body": "json",
+      "success": {
+        "statuses": [
+          201
+        ],
+        "kind": "json",
+        "native_shape": "IssueLink"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/kind",
+          "/source_issue_id",
+          "/target_issue_id"
+        ],
+        "optional": [
+          "/created_at"
+        ]
+      },
+      "semantics": [
+        "Map related_issue_id to issue_id; blocks and blocked_by have opposite direction."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "remove_issue_link",
+      "variant": "default",
+      "module": "relations",
+      "method": "DELETE",
+      "path": "/issues/{issue_id}/links/{link_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          204
+        ],
+        "kind": "empty",
+        "native_shape": "empty"
+      },
+      "receipt": {
+        "required": [],
+        "optional": []
+      },
+      "semantics": [
+        "Expected 204 confirms native removal. No lookup or delete loop."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "put_issue_artifact",
+      "variant": "default",
+      "module": "artifacts",
+      "method": "PUT",
+      "path": "/issues/{issue_id}/artifacts/{name}",
+      "body": "json",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "Artifact"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/issue_id",
+          "/name",
+          "/artifact_type",
+          "/version_count",
+          "/current_version/version",
+          "/fresh"
+        ],
+        "optional": [
+          "/current_version/reaffirmed_from",
+          "/current_version/created_at"
+        ]
+      },
+      "semantics": [
+        "Native current-version observation, not a transaction-bound receipt. Metadata-only PUT omits payload fields and does not append a version. Reaffirmation has no expected_version. Upload filename is a query value; only Content-Type is selectable."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "reaffirm_issue_artifact",
+      "variant": "default",
+      "module": "artifacts",
+      "method": "POST",
+      "path": "/issues/{issue_id}/artifacts/{name}/reaffirm",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "Artifact"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/issue_id",
+          "/name",
+          "/artifact_type",
+          "/version_count",
+          "/current_version/version",
+          "/fresh"
+        ],
+        "optional": [
+          "/current_version/reaffirmed_from",
+          "/current_version/created_at"
+        ]
+      },
+      "semantics": [
+        "Native current-version observation, not a transaction-bound receipt. Metadata-only PUT omits payload fields and does not append a version. Reaffirmation has no expected_version. Upload filename is a query value; only Content-Type is selectable."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "upload_issue_artifact_file",
+      "variant": "default",
+      "module": "uploads",
+      "method": "PUT",
+      "path": "/issues/{issue_id}/artifacts/{name}/file",
+      "body": "bytes",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "Artifact"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/issue_id",
+          "/name",
+          "/artifact_type",
+          "/version_count",
+          "/current_version/version",
+          "/fresh"
+        ],
+        "optional": [
+          "/current_version/reaffirmed_from",
+          "/current_version/created_at"
+        ]
+      },
+      "semantics": [
+        "Native current-version observation, not a transaction-bound receipt. Metadata-only PUT omits payload fields and does not append a version. Reaffirmation has no expected_version. Upload filename is a query value; only Content-Type is selectable."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "create_context",
+      "variant": "default",
+      "module": "context",
+      "method": "POST",
+      "path": "/context",
+      "body": "json",
+      "success": {
+        "statuses": [
+          201
+        ],
+        "kind": "json",
+        "native_shape": "ContextItem"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/kind",
+          "/version"
+        ],
+        "optional": [
+          "/updated_at"
+        ]
+      },
+      "semantics": [
+        "Omitted create scope means global. PATCH distinguishes missing/null/value on native nullable fields. Optional non-null fields reject null. expected_version omission retains last-write-wins. Skill files replace the set; append sends native text and is prompt-only. Env secrets remain write-only."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "edit_context",
+      "variant": "default",
+      "module": "context",
+      "method": "PATCH",
+      "path": "/context/{context_id}",
+      "body": "json",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ContextItem"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/kind",
+          "/version"
+        ],
+        "optional": [
+          "/updated_at"
+        ]
+      },
+      "semantics": [
+        "Omitted create scope means global. PATCH distinguishes missing/null/value on native nullable fields. Optional non-null fields reject null. expected_version omission retains last-write-wins. Skill files replace the set; append sends native text and is prompt-only. Env secrets remain write-only."
+      ],
+      "noncommitting_errors": [
+        {
+          "status": 409,
+          "code": "version_conflict",
+          "native_test": "af6cb25febf1b45d7eff32251f78fcf6355aed4a apps/web/src/routes/api/v1/context/[id]/server.test.ts: redacts a conflict found at the commit, with %s",
+          "proof": "The test asserts env_hint remains null and eventIds is unchanged after each losing write. The common updateContextItem version guard rejects the mutation. Native test source inspected; not executed by mcp-00."
+        }
+      ]
+    },
+    {
+      "tool": "append_context",
+      "variant": "default",
+      "module": "context",
+      "method": "POST",
+      "path": "/context/{context_id}/append",
+      "body": "json",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ContextItem"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/kind",
+          "/version"
+        ],
+        "optional": [
+          "/updated_at"
+        ]
+      },
+      "semantics": [
+        "Omitted create scope means global. PATCH distinguishes missing/null/value on native nullable fields. Optional non-null fields reject null. expected_version omission retains last-write-wins. Skill files replace the set; append sends native text and is prompt-only. Env secrets remain write-only."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "list_runners",
+      "variant": "default",
+      "module": "operations_read",
+      "method": "GET",
+      "path": "/runners",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "ListResponse<Runner>"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native redactions and unknown health fields. Queue uses native project query filter."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_runner",
+      "variant": "default",
+      "module": "operations_read",
+      "method": "GET",
+      "path": "/runners/{runner_id}",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "Runner"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native redactions and unknown health fields. Queue uses native project query filter."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_supervisor_queue",
+      "variant": "default",
+      "module": "operations_read",
+      "method": "GET",
+      "path": "/supervisor/queue",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "FleetQueue"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native redactions and unknown health fields. Queue uses native project query filter."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "get_supervisor_settings",
+      "variant": "default",
+      "module": "operations_read",
+      "method": "GET",
+      "path": "/supervisor/settings",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "SupervisorSettings"
+      },
+      "receipt": null,
+      "semantics": [
+        "Preserve native redactions and unknown health fields. Queue uses native project query filter."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "resume_issue",
+      "variant": "default",
+      "module": "recovery",
+      "method": "POST",
+      "path": "/issues/{issue_id}/resume",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "IssueDetail | shared-member projection"
+      },
+      "receipt": {
+        "required": [
+          "/id"
+        ],
+        "optional": [
+          "/project_id",
+          "/project/id",
+          "/number",
+          "/state/id",
+          "/decision_revision",
+          "/workflow_revision",
+          "/active_run",
+          "/permission_receipt"
+        ]
+      },
+      "semantics": [
+        "Bodyless POST. No-op success is confirmed; dispatch is not promised."
+      ],
+      "noncommitting_errors": []
+    },
+    {
+      "tool": "cancel_run",
+      "variant": "default",
+      "module": "recovery",
+      "method": "POST",
+      "path": "/runs/{run_id}/cancel",
+      "body": "empty",
+      "success": {
+        "statuses": [
+          200
+        ],
+        "kind": "json",
+        "native_shape": "AgentRunDetail"
+      },
+      "receipt": {
+        "required": [
+          "/id",
+          "/status",
+          "/outcome"
+        ],
+        "optional": [
+          "/issue_id",
+          "/ended_at"
+        ]
+      },
+      "semantics": [
+        "Bodyless POST. Outcome may be null. Successful cancellation can return an active lifecycle status; no wait/poll."
+      ],
+      "noncommitting_errors": []
+    }
+  ],
+  "error_fixtures_note": "Pure envelope preservation cases. Expected outcomes are executor contract expectations; HTTP decoding and classification tests belong to mcp-01.",
+  "error_fixtures": [
+    {
+      "tool": "transition_issue",
+      "status": 409,
+      "native_source": "apps/web/src/lib/server/api/issues.ts transitionIssue; issue-transition-pins.test.ts",
+      "expected_outcome": "rejected",
+      "error": {
+        "code": "decision_refresh_required",
+        "message": "The issue or its workflow changed after you read it; refresh and choose again",
+        "details": {
+          "committed": false,
+          "reason": "workflow_changed",
+          "current_state_id": "wfs_current",
+          "current_decision_revision": 4,
+          "current_workflow_revision": 7,
+          "remedy": "refresh_issue"
+        }
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "status": 403,
+      "native_source": "apps/web/src/lib/server/api/permissions.ts requireAccess",
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "comment.create",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "edit_context",
+      "status": 409,
+      "native_source": "apps/web/src/lib/server/api/context.ts versionConflict; routes/api/v1/context/[id]/server.test.ts",
+      "expected_outcome": "rejected",
+      "error": {
+        "code": "version_conflict",
+        "message": "The item changed to version 3 while this write was in flight; re-read and retry",
+        "details": {
+          "current": {
+            "id": "ctx_current",
+            "kind": "env",
+            "version": 3,
+            "secret": true,
+            "value_set": true,
+            "hint": null
+          }
+        }
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "status": 500,
+      "native_source": "apps/web/src/lib/server/api/issues.ts createComment post-insert loadComments",
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "internal",
+        "message": "Comment insert failed"
+      }
+    }
+  ]
+}
