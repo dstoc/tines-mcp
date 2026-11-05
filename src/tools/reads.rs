@@ -716,6 +716,7 @@ struct ListIssuesArgs {
     /// Opaque native cursor from the previous page; retain all filters when continuing.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "String")]
+    #[schemars(length(min = 1, max = 4096))]
     cursor: Option<String>,
 }
 
@@ -781,6 +782,7 @@ struct ReadArtifactContentArgs {
     /// SHA-256 returned by the previous chunk for this complete source.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "String")]
+    #[schemars(regex(pattern = "^[0-9a-fA-F]{64}$"))]
     expected_sha256: Option<String>,
 }
 
@@ -834,6 +836,7 @@ struct ListEventsArgs {
     /// Opaque native cursor from the previous page; retain all filters when continuing.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "String")]
+    #[schemars(length(min = 1, max = 4096))]
     cursor: Option<String>,
 }
 
@@ -900,6 +903,7 @@ struct ListContextArgs {
     /// Opaque native cursor from the previous page; keep filters unchanged when continuing.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "String")]
+    #[schemars(length(min = 1, max = 4096))]
     cursor: Option<String>,
 }
 
@@ -950,6 +954,7 @@ struct ListRunsArgs {
     /// Only true is supported. Omit to include every status.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "bool")]
+    #[schemars(extend("const" = true))]
     active: Option<bool>,
     /// Native page size from 1 through 100. Tines defaults to 50.
     #[serde(default, deserialize_with = "deserialize_optional")]
@@ -959,6 +964,7 @@ struct ListRunsArgs {
     /// Opaque native cursor from the previous page; keep filters unchanged.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "String")]
+    #[schemars(length(min = 1, max = 4096))]
     cursor: Option<String>,
 }
 
@@ -989,6 +995,7 @@ struct GetRunLogArgs {
     /// SHA-256 returned by the previous chunk for this complete source.
     #[serde(default, deserialize_with = "deserialize_optional")]
     #[schemars(with = "String")]
+    #[schemars(regex(pattern = "^[0-9a-fA-F]{64}$"))]
     expected_sha256: Option<String>,
 }
 
@@ -1178,9 +1185,8 @@ fn project_content(
             .as_u64()
             .ok_or_else(invalid_response)? as u32,
         context["expected_sha256"].as_str(),
-        response.status,
     )
-    .map_err(content_error)?;
+    .map_err(|error| ProjectionError::new(error.code, error.message))?;
     let mut headers = Map::new();
     if let Some(value) = response.headers.content_type {
         headers.insert("content_type".into(), json!(value));
@@ -1207,18 +1213,6 @@ fn project_content(
         links: Vec::new(),
         omissions: Vec::new(),
     })
-}
-
-fn content_error(error: crate::tines::TinesError) -> ProjectionError {
-    match error {
-        crate::tines::TinesError::Schema { code, message, .. } => {
-            ProjectionError::new(code, message)
-        }
-        crate::tines::TinesError::Validation { message, .. } => {
-            ProjectionError::new("invalid_input", message)
-        }
-        _ => invalid_response(),
-    }
 }
 
 fn invalid_response() -> ProjectionError {

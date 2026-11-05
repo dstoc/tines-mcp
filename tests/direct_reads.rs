@@ -139,6 +139,18 @@ fn discovery_is_read_only_strict_and_matches_preparation() {
             Some(&json!(false))
         );
         assert!(tool.output_schema.is_some());
+        if tool.name == "list_runs" {
+            assert_eq!(tool.input_schema["properties"]["active"]["const"], true);
+            assert_eq!(tool.input_schema["properties"]["limit"]["maximum"], 100);
+        }
+        if tool.name == "read_artifact_content" {
+            assert_eq!(tool.input_schema["properties"]["version"]["minimum"], 1);
+            assert_eq!(tool.input_schema["properties"]["chunk_bytes"]["minimum"], 4);
+            assert_eq!(
+                tool.input_schema["properties"]["chunk_bytes"]["maximum"],
+                32768
+            );
+        }
         let annotations = serde_json::to_value(tool.annotations.unwrap()).unwrap();
         assert_eq!(annotations["readOnlyHint"], true);
         assert_eq!(annotations["destructiveHint"], false);

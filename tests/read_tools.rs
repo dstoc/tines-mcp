@@ -361,34 +361,48 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
+    let expected = [
+        "list_projects",
+        "get_project",
+        "list_issues",
+        "get_issue",
+        "list_issue_artifacts",
+        "get_issue_artifact",
+        "read_artifact_content",
+        "list_workflows",
+        "get_workflow",
+        "list_labels",
+        "list_events",
+        "list_context",
+        "get_context",
+        "get_issue_context",
+        "get_issue_journal",
+        "list_runs",
+        "get_run",
+        "get_run_log",
+        "explain_dispatch",
+        "append_issue_comment",
+    ];
+    for name in expected {
+        assert_eq!(
+            names.iter().filter(|actual| **actual == name).count(),
+            1,
+            "{name}"
+        );
+    }
     assert_eq!(
-        names,
-        [
-            "list_projects",
-            "get_project",
-            "list_issues",
-            "get_issue",
-            "list_issue_artifacts",
-            "get_issue_artifact",
-            "read_artifact_content",
-            "list_workflows",
-            "get_workflow",
-            "list_labels",
-            "list_events",
-            "list_context",
-            "get_context",
-            "get_issue_context",
-            "get_issue_journal",
-            "list_runs",
-            "get_run",
-            "get_run_log",
-            "explain_dispatch",
-            "append_issue_comment",
-        ]
+        names.iter().collect::<std::collections::HashSet<_>>().len(),
+        names.len()
     );
-    assert!(tools.iter().all(
-        |tool| tool["annotations"]["readOnlyHint"] == (tool["name"] != "append_issue_comment")
-    ));
+    for tool in tools
+        .iter()
+        .filter(|tool| expected.contains(&tool["name"].as_str().unwrap()))
+    {
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"],
+            tool["name"] != "append_issue_comment"
+        );
+    }
     let get_issue = tools
         .iter()
         .find(|tool| tool["name"] == "get_issue")
@@ -433,7 +447,7 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
         .unwrap();
     assert_eq!(
         list_runs["inputSchema"]["properties"]["workflow_id"]["type"],
-        json!(["string", "null"])
+        json!("string")
     );
     assert!(
         list_runs["inputSchema"]["properties"]
@@ -453,19 +467,19 @@ async fn tools_are_discoverable_and_issue_lookup_schema_requires_exactly_one_loo
         .unwrap();
     assert_eq!(
         list_context["inputSchema"]["properties"]["project_id"]["type"],
-        json!(["string", "null"])
+        json!("string")
     );
     assert_eq!(
         list_context["inputSchema"]["properties"]["state_id"]["type"],
-        json!(["string", "null"])
+        json!("string")
     );
     assert_eq!(
         list_context["inputSchema"]["properties"]["label_id"]["type"],
-        json!(["string", "null"])
+        json!("string")
     );
     assert_eq!(
         list_context["inputSchema"]["properties"]["issue_id"]["type"],
-        json!(["string", "null"])
+        json!("string")
     );
     assert_eq!(
         tools
@@ -542,14 +556,12 @@ async fn artifact_metadata_is_separate_and_ordinary_issue_reads_do_not_expand_ar
     .await;
     assert_eq!(fetched["data"]["versions"][0]["version"], 1);
     assert_eq!(fetched["data"]["id"], "artifact-1");
-    assert_eq!(fetched["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(fetched["meta"]["links"], json!([]));
     assert_eq!(
         upstream.state.requests(),
         [
             "/api/v1/issues/issue-a",
-            "/api/v1/issues/issue-a",
             "/api/v1/issues/issue-a/artifacts",
-            "/api/v1/issues/issue-a",
             "/api/v1/issues/issue-a/artifacts/design-doc"
         ]
     );
@@ -617,8 +629,7 @@ async fn folder_content_uses_selected_version_and_path_and_keeps_utf8_chunks_on_
             "version": 1,
             "path": "src/main.rs",
             "offset": 32767,
-            "expected_sha256": first["data"]["sha256"],
-            "expected_artifact_id": "folder-id"
+            "expected_sha256": first["data"]["sha256"]
         }),
     )
     .await;
@@ -631,22 +642,22 @@ async fn folder_content_uses_selected_version_and_path_and_keeps_utf8_chunks_on_
     let requests = upstream.state.requests();
     assert_eq!(
         requests.len(),
-        8,
-        "each chunk re-fetches metadata and bytes"
+        2,
+        "each chunk fetches bytes once without metadata"
     );
     assert_eq!(
-        requests[2].split('?').next().unwrap(),
+        requests[0].split('?').next().unwrap(),
         "/api/v1/issues/issue-folder/artifacts/source/content"
     );
     assert_eq!(
-        decoded_query(&requests[2]),
+        decoded_query(&requests[0]),
         [
             ("version".to_owned(), "1".to_owned()),
             ("path".to_owned(), "src/main.rs".to_owned())
         ]
     );
     assert_eq!(
-        decoded_query(&requests[6]),
+        decoded_query(&requests[1]),
         [
             ("version".to_owned(), "1".to_owned()),
             ("path".to_owned(), "src/main.rs".to_owned())
@@ -656,7 +667,7 @@ async fn folder_content_uses_selected_version_and_path_and_keeps_utf8_chunks_on_
 }
 
 #[tokio::test]
-async fn omitted_version_is_pinned_and_binary_chunks_are_base64_with_repeated_bounded_fetches() {
+async fn omitted_version_stays_current_and_binary_chunks_are_base64_with_one_fetch_each() {
     let detail = artifact_detail(
         "binary-id",
         "issue-binary",
@@ -685,7 +696,7 @@ async fn omitted_version_is_pinned_and_binary_chunks_are_base64_with_repeated_bo
     )
     .await;
     assert_eq!(first["data"]["encoding"], "base64");
-    assert_eq!(first["data"]["source"]["version"], 3);
+    assert!(first["data"]["source"].get("version").is_none());
     assert_eq!(first["data"]["total_bytes"], 32770);
     assert_eq!(first["data"]["returned_length"], 32768);
     assert_eq!(first["data"]["next_offset"], 32768);
@@ -702,14 +713,12 @@ async fn omitted_version_is_pinned_and_binary_chunks_are_base64_with_repeated_bo
         json!({
             "issue_id": "issue-binary",
             "name": "archive",
-            "version": 3,
             "offset": 32768,
-            "expected_sha256": first["data"]["sha256"],
-            "expected_artifact_id": "binary-id"
+            "expected_sha256": first["data"]["sha256"]
         }),
     )
     .await;
-    assert_eq!(second["data"]["source"]["version"], 3);
+    assert!(second["data"]["source"].get("version").is_none());
     assert_eq!(second["data"]["offset"], 32768);
     assert_eq!(second["data"]["returned_length"], 2);
     assert_eq!(second["data"]["next_offset"], Value::Null);
@@ -722,142 +731,84 @@ async fn omitted_version_is_pinned_and_binary_chunks_are_base64_with_repeated_bo
     assert_eq!(second["data"]["sha256"], first["data"]["sha256"]);
 
     let requests = upstream.state.requests();
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 2);
     assert_eq!(
-        decoded_query(&requests[2]),
-        [("version".to_owned(), "3".to_owned())]
-    );
-    assert_eq!(
-        decoded_query(&requests[6]),
-        [("version".to_owned(), "3".to_owned())]
+        requests,
+        ["/api/v1/issues/issue-binary/artifacts/archive/content"; 2]
     );
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn deleted_and_recreated_artifact_fails_identity_recheck() {
-    let old = artifact_detail(
-        "artifact-old",
-        "issue-recreated",
-        "report",
-        "text",
-        vec![artifact_version(1, "text/plain")],
-    );
-    let replacement = artifact_detail(
-        "artifact-new",
-        "issue-recreated",
-        "report",
-        "text",
-        vec![artifact_version(1, "text/plain")],
-    );
-    let upstream = start_mock(old.clone()).await;
-    set_issue_parent_replies(&upstream.state, "issue-recreated", "project-a", 3, 1);
+async fn artifact_bytes_do_not_claim_metadata_identity_or_resolved_version() {
+    let upstream = start_mock(json!({})).await;
+    // Neither denial may gate this independent content read.
+    for path in ["/api/v1/issues/i", "/api/v1/issues/i/artifacts/a"] {
+        upstream.state.set_path_response(
+            path,
+            StatusCode::FORBIDDEN,
+            json!({"error":{"code":"access_denied"}}),
+        );
+    }
     upstream.state.set_replies(
-        "/api/v1/issues/issue-recreated/artifacts/report",
-        [MockReply::json(old), MockReply::json(replacement)],
+        "/api/v1/issues/i/artifacts/a/content",
+        [MockReply::bytes("hello", "text/plain")],
     );
-    upstream.state.set_replies(
-        "/api/v1/issues/issue-recreated/artifacts/report/content",
-        [MockReply::bytes("body", "text/plain")],
-    );
-    let app = configured_app(&upstream);
     let result = call_tool(
-        app,
+        configured_app(&upstream),
         "read_artifact_content",
-        json!({"issue_id": "issue-recreated", "name": "report"}),
+        json!({"issue_id":"i","name":"a"}),
     )
     .await;
-    assert_eq!(result["error"]["code"], "content_changed");
+    assert_eq!(result["data"]["source"], json!({"issue_id":"i","name":"a"}));
+    assert_eq!(result["data"]["content"], "hello");
+    assert_eq!(result["data"]["headers"]["content_type"], "text/plain");
+    assert!(result["data"].get("artifact").is_none());
+    assert_eq!(result["meta"]["links"], json!([]));
     assert_eq!(
         upstream.state.requests(),
-        [
-            "/api/v1/issues/issue-recreated",
-            "/api/v1/issues/issue-recreated/artifacts/report",
-            "/api/v1/issues/issue-recreated/artifacts/report/content?version=1",
-            "/api/v1/issues/issue-recreated/artifacts/report"
-        ]
+        ["/api/v1/issues/i/artifacts/a/content"]
     );
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn continuation_detects_changed_source_digest_and_rejects_missing_identity_fields() {
-    let detail = artifact_detail(
-        "stable-artifact-id",
-        "issue-changing",
-        "payload",
-        "file",
-        vec![artifact_version(1, "application/octet-stream")],
-    );
-    let original = vec![0x41; 32769];
-    let mut changed = original.clone();
-    changed[0] = 0x42;
-    let upstream = start_mock(detail.clone()).await;
-    set_issue_parent_replies(&upstream.state, "issue-changing", "project-a", 4, 2);
+async fn continuation_detects_changed_source_digest_and_rejects_obsolete_fields_locally() {
+    let upstream = start_mock(json!({})).await;
     upstream.state.set_replies(
-        "/api/v1/issues/issue-changing/artifacts/payload/content",
+        "/api/v1/issues/i/artifacts/a/content",
         [
-            MockReply::bytes(original.clone(), "application/octet-stream"),
-            MockReply::bytes(changed, "application/octet-stream"),
+            MockReply::bytes("abcdef", "text/plain"),
+            MockReply::bytes("abc", "text/plain"),
         ],
     );
     let app = configured_app(&upstream);
     let first = call_tool(
         app.clone(),
         "read_artifact_content",
-        json!({"issue_id": "issue-changing", "name": "payload", "version": 1}),
+        json!({"issue_id":"i","name":"a","chunk_bytes":4}),
     )
     .await;
-    assert_eq!(first["data"]["next_offset"], 32768);
-    let changed_result = call_tool(
+    let changed = call_tool(
         app.clone(),
         "read_artifact_content",
-        json!({
-            "issue_id": "issue-changing",
-            "name": "payload",
-            "version": 1,
-            "offset": 32768,
-            "expected_sha256": first["data"]["sha256"],
-            "expected_artifact_id": "stable-artifact-id"
-        }),
+        json!({"issue_id":"i","name":"a","offset":4,"expected_sha256":first["data"]["sha256"]}),
     )
     .await;
-    assert_eq!(changed_result["error"]["code"], "content_changed");
-    assert_eq!(upstream.state.requests().len(), 8);
-    upstream.task.abort();
-
-    let upstream = start_mock(detail).await;
-    set_issue_parent_replies(&upstream.state, "issue-changing", "project-a", 4, 1);
-    let app = configured_app(&upstream);
+    assert_eq!(changed["error"]["code"], "content_changed");
+    assert_eq!(changed["meta"]["http_status"], 200);
     for args in [
-        json!({"issue_id": "issue-changing", "name": "payload", "offset": 1, "expected_sha256": "0".repeat(64), "expected_artifact_id": "stable-artifact-id"}),
-        json!({"issue_id": "issue-changing", "name": "payload", "version": 1, "offset": 1, "expected_sha256": "0".repeat(64)}),
-        json!({"issue_id": "issue-changing", "name": "payload", "version": 1, "offset": 1, "expected_artifact_id": "stable-artifact-id"}),
+        json!({"issue_id":"i","name":"a","offset":4}),
+        json!({"issue_id":"i","name":"a","offset":4,"expected_sha256":"0".repeat(64),"expected_artifact_id":"old"}),
+        json!({"issue_id":"i","name":"a","version":null}),
     ] {
         let result = call_tool(app.clone(), "read_artifact_content", args).await;
-        assert_eq!(result["error"]["source"], "validation");
+        assert_eq!(result["error"]["code"], "invalid_input");
+        assert_eq!(result["meta"]["http_status"], Value::Null);
     }
-    assert!(upstream.state.requests().is_empty());
-    let mismatched_id = call_tool(
-        app,
-        "read_artifact_content",
-        json!({
-            "issue_id": "issue-changing",
-            "name": "payload",
-            "version": 1,
-            "offset": 1,
-            "expected_sha256": "0".repeat(64),
-            "expected_artifact_id": "replaced-artifact-id"
-        }),
-    )
-    .await;
-    assert_eq!(mismatched_id["error"]["code"], "content_changed");
     assert_eq!(
         upstream.state.requests(),
-        [
-            "/api/v1/issues/issue-changing",
-            "/api/v1/issues/issue-changing/artifacts/payload"
-        ]
+        ["/api/v1/issues/i/artifacts/a/content"; 2]
     );
     upstream.task.abort();
 }
@@ -887,15 +838,13 @@ async fn text_continuation_rejects_a_caller_offset_inside_a_utf8_code_point() {
             "name": "note",
             "version": 1,
             "offset": 2,
-            "expected_sha256": sha256(&bytes),
-            "expected_artifact_id": "text-id"
+            "expected_sha256": sha256(&bytes)
         }),
     )
     .await;
-    assert_eq!(result["error"]["source"], "validation");
     assert_eq!(
         result["error"]["message"],
-        "offset: must be a UTF-8 character boundary for text content"
+        "must be a UTF-8 character boundary for text content"
     );
     upstream.task.abort();
 }
@@ -932,16 +881,11 @@ async fn folder_content_requires_a_path_and_link_artifacts_remain_references() {
         json!({"issue_id": "issue-folder-path", "name": "docs"}),
     )
     .await;
-    assert_eq!(missing_path["error"]["source"], "upstream");
-    assert_eq!(missing_path["error"]["status"], 422);
+    assert_eq!(missing_path["meta"]["http_status"], 422);
     assert_eq!(missing_path["error"]["code"], "folder_path_required");
     assert_eq!(
         upstream.state.requests(),
-        [
-            "/api/v1/issues/issue-folder-path",
-            "/api/v1/issues/issue-folder-path/artifacts/docs",
-            "/api/v1/issues/issue-folder-path/artifacts/docs/content?version=1"
-        ]
+        ["/api/v1/issues/issue-folder-path/artifacts/docs/content"]
     );
     upstream.task.abort();
 
@@ -963,68 +907,34 @@ async fn folder_content_requires_a_path_and_link_artifacts_remain_references() {
     );
     assert_eq!(
         upstream.state.requests(),
-        [
-            "/api/v1/issues/issue-link",
-            "/api/v1/issues/issue-link/artifacts/spec"
-        ]
+        ["/api/v1/issues/issue-link/artifacts/spec"]
     );
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn artifact_content_source_over_one_mib_preserves_metadata_without_returning_bytes() {
-    let detail = artifact_detail(
-        "large-id",
-        "issue-large",
-        "large-file",
-        "file",
-        vec![artifact_version(1, "application/octet-stream")],
-    );
-    let upstream = start_mock(detail).await;
-    set_issue_parent_replies(&upstream.state, "issue-large", "project-a", 8, 1);
+async fn artifact_content_source_over_one_mib_fails_without_metadata_fetches() {
+    let upstream = start_mock(json!({})).await;
     upstream.state.set_replies(
-        "/api/v1/issues/issue-large/artifacts/large-file/content",
+        "/api/v1/issues/i/artifacts/a/content",
         [MockReply::bytes(
             vec![b'x'; 1024 * 1024 + 1],
             "application/octet-stream",
         )],
     );
-    let app = configured_app(&upstream);
     let result = call_tool(
-        app,
+        configured_app(&upstream),
         "read_artifact_content",
-        json!({"issue_id": "issue-large", "name": "large-file"}),
+        json!({"issue_id":"i","name":"a"}),
     )
     .await;
-    assert_eq!(result["error"]["source"], "schema");
-    assert_eq!(result["error"]["status"], 200);
-    assert_eq!(result["error"]["code"], "content_source_too_large");
-    assert!(
-        result["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("1 MiB")
-    );
-    assert_eq!(result["error"]["details"]["limit_bytes"], 1024 * 1024);
-    assert!(result["error"]["diagnostic_id"].is_number());
+    assert_eq!(result["error"]["code"], "upstream_body_too_large");
+    assert_eq!(result["meta"]["http_status"], 200);
+    assert_eq!(result["data"], Value::Null);
     assert_eq!(
-        result["data"]["source"],
-        json!({
-            "issue_id": "issue-large",
-            "artifact_id": "large-id",
-            "name": "large-file",
-            "version": 1,
-            "path": null
-        })
+        upstream.state.requests(),
+        ["/api/v1/issues/i/artifacts/a/content"]
     );
-    assert_eq!(result["data"]["mime_type"], "application/octet-stream");
-    assert!(result["data"].get("content").is_none());
-    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
-    assert_eq!(
-        result["meta"]["links"][0]["href"],
-        format!("{}/issues/project-a/8", upstream.base_url)
-    );
-    assert_eq!(upstream.state.requests().len(), 4);
     upstream.task.abort();
 }
 
@@ -1041,7 +951,7 @@ async fn issue_lookup_rejects_partial_conflicting_and_nonpositive_aliases_withou
         json!({"issue_id": null, "project_id": "project-a", "number": 4}),
     ] {
         let result = call_tool(app.clone(), "get_issue", args).await;
-        assert_eq!(result["error"]["source"], "validation");
+        assert_eq!(result["error"]["code"], "invalid_input");
     }
     assert!(upstream.state.requests().is_empty());
     upstream.task.abort();
@@ -1113,7 +1023,7 @@ async fn issue_list_maps_filters_and_preserves_all_rows_and_opaque_cursor() {
     );
     assert_eq!(
         first["meta"]["links"][0]["href"],
-        format!("{}/issues/project-visible/22", upstream.base_url)
+        "/issues/project-visible/22"
     );
     assert_eq!(first["meta"]["links"].as_array().unwrap().len(), 2);
     let request = upstream.state.requests().remove(0);
@@ -1242,7 +1152,7 @@ async fn project_workflow_and_label_tools_use_one_native_request_and_keep_shapes
     );
     assert_eq!(
         projects["meta"]["links"][0]["href"],
-        format!("{}/projects/project-visible", upstream.base_url)
+        "/projects/project-visible"
     );
     assert_eq!(upstream.state.requests(), ["/api/v1/projects?archived=all"]);
 
@@ -1262,7 +1172,7 @@ async fn project_workflow_and_label_tools_use_one_native_request_and_keep_shapes
     );
     assert_eq!(
         workflows["meta"]["links"][0]["href"],
-        format!("{}/workflows/workflow-1", upstream.base_url)
+        "/workflows/workflow-1"
     );
     assert_eq!(
         upstream.state.requests().last().unwrap(),
@@ -1297,10 +1207,7 @@ async fn single_project_and_workflow_reads_map_ids_without_extra_requests() {
     )
     .await;
     assert_eq!(project["data"]["viewer_role"], "member");
-    assert_eq!(
-        project["meta"]["links"][0]["href"],
-        format!("{}/projects/project-a", upstream.base_url)
-    );
+    assert_eq!(project["meta"]["links"][0]["href"], "/projects/project-a");
     assert_eq!(upstream.state.requests(), ["/api/v1/projects/project-a"]);
 
     upstream.state.set_body(json!({
@@ -1313,7 +1220,7 @@ async fn single_project_and_workflow_reads_map_ids_without_extra_requests() {
     assert_eq!(workflow["data"]["revision"], 9);
     assert_eq!(
         workflow["meta"]["links"][0]["href"],
-        format!("{}/workflows/workflow-a", upstream.base_url)
+        "/workflows/workflow-a"
     );
     assert_eq!(
         upstream.state.requests().last().unwrap(),
@@ -1368,11 +1275,7 @@ async fn event_list_rejects_an_empty_workflow_state_id() {
 
     let result = call_tool(app, "list_events", json!({"state": "  "})).await;
 
-    assert_eq!(result["error"]["source"], "validation");
-    assert_eq!(
-        result["error"]["message"],
-        "state: must be a non-empty workflow state ID"
-    );
+    assert_eq!(result["error"]["message"], "must be nonempty");
     assert!(upstream.state.requests().is_empty());
     upstream.task.abort();
 }
@@ -1766,7 +1669,7 @@ async fn list_runs_preserves_status_and_outcome_and_uses_native_filters() {
     .await;
     assert_eq!(result["data"]["items"], json!([run]));
     assert_eq!(result["data"]["next_cursor"], "next+/=");
-    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
+    assert_eq!(result["meta"]["links"], json!([]));
     assert_eq!(
         decoded_query(&upstream.state.requests()[0]),
         [
@@ -1823,19 +1726,14 @@ async fn get_run_keeps_native_status_outcome_and_dispatch_explanation_separate()
     assert_eq!(run["data"], detail);
     assert_eq!(run["data"]["status"], "completed");
     assert_eq!(run["data"]["outcome"], "stalled");
-    assert_eq!(run["meta"]["links"][0]["label"], "Open issue Project/7");
+    assert_eq!(run["meta"]["links"], json!([]));
 
     let explanation = call_tool(app, "explain_dispatch", json!({"issue_id": "issue-a"})).await;
     assert_eq!(explanation["data"], dispatch);
     assert_eq!(explanation["data"]["eligible"], false);
     assert_eq!(
         upstream.state.requests(),
-        [
-            "/api/v1/runs/run-a",
-            "/api/v1/issues/issue-a",
-            "/api/v1/issues/issue-a",
-            "/api/v1/issues/issue-a/dispatch"
-        ]
+        ["/api/v1/runs/run-a", "/api/v1/issues/issue-a/dispatch"]
     );
     upstream.task.abort();
 }
@@ -1895,58 +1793,37 @@ async fn run_log_tail_and_full_sources_are_bounded_and_continuations_check_the_d
     )
     .await;
     assert_eq!(changed["error"]["code"], "content_changed");
-    assert_eq!(changed["error"]["status"], Value::Null);
+    assert_eq!(changed["meta"]["http_status"], 200);
+    assert!(full["data"].get("run").is_none());
+    assert_eq!(
+        upstream.state.requests(),
+        [
+            "/api/v1/runs/run-a",
+            "/api/v1/runs/run-a/log",
+            "/api/v1/runs/run-a/log"
+        ]
+    );
     upstream.task.abort();
 }
 
 #[tokio::test]
-async fn oversized_full_run_log_preserves_run_metadata_and_issue_link() {
+async fn oversized_full_run_log_has_no_tail_metadata_or_fallback() {
     let upstream = start_mock(json!({})).await;
-    upstream.state.set_response(
-        "/api/v1/runs/run-large",
-        run_detail("run-large", "issue-large"),
-    );
-    upstream.state.set_response(
-        "/api/v1/issues/issue-large",
-        json!({"id": "issue-large", "project_id": "project-a", "number": 7, "project_name": "Project"}),
-    );
     upstream.state.set_replies(
-        "/api/v1/runs/run-large/log",
-        [MockReply::bytes(
-            vec![b'x'; 1024 * 1024 + 1],
-            "text/plain; charset=utf-8",
-        )],
+        "/api/v1/runs/r/log",
+        [MockReply::bytes(vec![b'x'; 1024 * 1024 + 1], "text/plain")],
     );
-    let app = configured_app(&upstream);
-
     let result = call_tool(
-        app,
+        configured_app(&upstream),
         "get_run_log",
-        json!({"run_id": "run-large", "mode": "full"}),
+        json!({"run_id":"r","mode":"full"}),
     )
     .await;
-
-    assert_eq!(result["error"]["source"], "schema");
-    assert_eq!(result["error"]["status"], 200);
-    assert_eq!(result["error"]["code"], "content_source_too_large");
-    assert_eq!(result["error"]["details"]["limit_bytes"], 1024 * 1024);
-    assert_eq!(
-        result["data"]["source"],
-        json!({"run_id": "run-large", "mode": "full"})
-    );
-    assert_eq!(result["data"]["run"]["status"], "completed");
-    assert_eq!(result["data"]["run"]["outcome"], "stalled");
-    assert_eq!(result["data"]["run"]["log_bytes_dropped"], 12);
-    assert_eq!(result["data"]["run"]["log_full_bytes"], 25);
-    assert_eq!(result["data"]["run"]["log_raw_bytes"], 0);
-    assert_eq!(result["data"]["run"]["log_expired"], false);
-    assert!(result["data"].get("content").is_none());
-    assert_eq!(result["meta"]["links"][0]["rel"], "issue");
-    assert_eq!(
-        result["meta"]["links"][0]["href"],
-        format!("{}/issues/project-a/7", upstream.base_url)
-    );
-    assert_eq!(upstream.state.requests().len(), 3);
+    assert_eq!(result["error"]["code"], "upstream_body_too_large");
+    assert_eq!(result["meta"]["http_status"], 200);
+    assert_eq!(result["data"], Value::Null);
+    assert_eq!(result["meta"]["links"], json!([]));
+    assert_eq!(upstream.state.requests(), ["/api/v1/runs/r/log"]);
     upstream.task.abort();
 }
 
@@ -1980,9 +1857,10 @@ async fn full_run_log_preserves_missing_expired_and_temporarily_unavailable_stat
             json!({"run_id": "run-a", "mode": "full"}),
         )
         .await;
-        assert_eq!(result["error"]["source"], "upstream");
-        assert_eq!(result["error"]["status"], status.as_u16());
+        assert_eq!(result["meta"]["http_status"], status.as_u16());
         assert!(result["data"].is_null());
+        assert_eq!(result["error"]["code"], "run_log_error");
+        assert_eq!(upstream.state.requests(), ["/api/v1/runs/run-a/log"]);
         upstream.task.abort();
     }
 }
@@ -2012,7 +1890,7 @@ async fn direct_issue_reads_keep_current_project_attribution_after_a_transfer() 
         assert_eq!(result["data"], issue);
         assert_eq!(
             result["meta"]["links"][0]["href"],
-            format!("{}/issues/project-current/8", upstream.base_url)
+            "/issues/project-current/8"
         );
     }
     assert_eq!(
@@ -2048,137 +1926,95 @@ async fn required_upstream_denials_keep_status_and_code_across_read_paths() {
         StatusCode::FORBIDDEN,
         StatusCode::NOT_FOUND,
     ] {
-        for (name, args, path, prerequisites) in [
-            ("list_projects", json!({}), "/api/v1/projects", vec![]),
+        for (name, args, path) in [
+            ("list_projects", json!({}), "/api/v1/projects"),
             (
                 "get_project",
                 json!({"project_id": "project-a"}),
                 "/api/v1/projects/project-a",
-                vec![],
             ),
             (
                 "list_issues",
                 json!({"project_id": "project-a"}),
                 "/api/v1/issues",
-                vec![],
             ),
             (
                 "get_issue",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/issues/issue-a",
-                vec![],
             ),
             (
                 "get_issue",
                 json!({"project_id": "project-a", "number": 7}),
                 "/api/v1/projects/project-a/issues/7",
-                vec![],
             ),
             (
                 "list_issue_artifacts",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/issues/issue-a/artifacts",
-                vec!["/api/v1/issues/issue-a"],
             ),
             (
                 "get_issue_artifact",
                 json!({"issue_id": "issue-a", "name": "report"}),
                 "/api/v1/issues/issue-a/artifacts/report",
-                vec!["/api/v1/issues/issue-a"],
             ),
             (
                 "read_artifact_content",
                 json!({"issue_id": "issue-a", "name": "report"}),
                 "/api/v1/issues/issue-a/artifacts/report/content",
-                vec![
-                    "/api/v1/issues/issue-a",
-                    "/api/v1/issues/issue-a/artifacts/report",
-                ],
             ),
             (
                 "list_workflows",
                 json!({"project_id": "project-a"}),
                 "/api/v1/workflows",
-                vec![],
             ),
             (
                 "get_workflow",
                 json!({"workflow_id": "workflow-a"}),
                 "/api/v1/workflows/workflow-a",
-                vec![],
             ),
-            ("list_labels", json!({}), "/api/v1/labels", vec![]),
+            (
+                "get_run_log",
+                json!({"run_id":"run-a","mode":"tail"}),
+                "/api/v1/runs/run-a",
+            ),
+            ("list_labels", json!({}), "/api/v1/labels"),
             (
                 "list_events",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/events",
-                vec![],
             ),
             (
                 "list_context",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/context",
-                vec![],
             ),
             (
                 "get_context",
                 json!({"context_id": "context-a"}),
                 "/api/v1/context/context-a",
-                vec![],
             ),
             (
                 "get_issue_context",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/issues/issue-a/context",
-                vec![],
             ),
             (
                 "get_issue_journal",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/issues/issue-a/journal",
-                vec![],
             ),
-            (
-                "get_run",
-                json!({"run_id": "run-a"}),
-                "/api/v1/runs/run-a",
-                vec![],
-            ),
-            (
-                "list_runs",
-                json!({"issue_id": "issue-a"}),
-                "/api/v1/runs",
-                vec![],
-            ),
+            ("get_run", json!({"run_id": "run-a"}), "/api/v1/runs/run-a"),
+            ("list_runs", json!({"issue_id": "issue-a"}), "/api/v1/runs"),
             (
                 "get_run_log",
                 json!({"run_id": "run-a", "mode": "full"}),
                 "/api/v1/runs/run-a/log",
-                vec!["/api/v1/runs/run-a", "/api/v1/issues/issue-a"],
             ),
             (
                 "explain_dispatch",
                 json!({"issue_id": "issue-a"}),
                 "/api/v1/issues/issue-a/dispatch",
-                vec!["/api/v1/issues/issue-a"],
-            ),
-            (
-                "list_issue_artifacts",
-                json!({"issue_id": "issue-a"}),
-                "/api/v1/issues/issue-a",
-                vec![],
-            ),
-            (
-                "get_issue_artifact",
-                json!({"issue_id": "issue-a", "name": "report"}),
-                "/api/v1/issues/issue-a",
-                vec![],
-            ),
-            (
-                "read_artifact_content",
-                json!({"issue_id": "issue-a", "name": "report"}),
-                "/api/v1/issues/issue-a",
-                vec![],
             ),
         ] {
             let upstream = start_mock(json!({})).await;
@@ -2201,11 +2037,7 @@ async fn required_upstream_denials_keep_status_and_code_across_read_paths() {
             );
             upstream.state.set_path_response(path, status, json!({"error": {"code": "access_denied", "message": "Token cannot read this resource"}}));
             let result = call_tool(configured_app(&upstream), name, args).await;
-            assert_eq!(
-                result["error"]["source"], "upstream",
-                "{name} {path}: {result}"
-            );
-            assert_eq!(result["error"]["status"], status.as_u16());
+            assert_eq!(result["meta"]["http_status"], status.as_u16());
             assert_eq!(result["error"]["code"], "access_denied");
             assert!(result["data"].is_null());
             let requests = upstream.state.requests();
@@ -2213,11 +2045,7 @@ async fn required_upstream_denials_keep_status_and_code_across_read_paths() {
                 .iter()
                 .map(|uri| uri.split('?').next().unwrap())
                 .collect();
-            assert_eq!(
-                paths,
-                [prerequisites, vec![path]].concat(),
-                "no retries or policy lookups for {name}"
-            );
+            assert_eq!(paths, [path], "no retries or policy lookups for {name}");
             upstream.task.abort();
         }
     }
@@ -2268,7 +2096,14 @@ async fn optional_run_and_dispatch_links_do_not_gate_token_authorized_reads() {
         .await;
         assert_eq!(log["data"]["content"], "full log");
         assert_eq!(log["meta"]["links"], json!([]));
-        assert_eq!(upstream.state.requests().len(), 7);
+        assert_eq!(
+            upstream.state.requests(),
+            [
+                "/api/v1/runs/run-a",
+                "/api/v1/issues/issue-a/dispatch",
+                "/api/v1/runs/run-a/log"
+            ]
+        );
         upstream.task.abort();
     }
 }
@@ -2295,13 +2130,16 @@ async fn direct_reads_still_reject_mismatched_resource_identity() {
         (
             "list_issue_artifacts",
             json!({"issue_id": "issue-a"}),
-            "/api/v1/issues/issue-a",
+            "/api/v1/issues/issue-a/artifacts",
         ),
     ] {
         let upstream = start_mock(json!({"id": "different-resource"})).await;
         let result = call_tool(configured_app(&upstream), name, args).await;
-        assert_eq!(result["error"]["source"], "schema", "{name}: {result}");
-        assert_eq!(result["error"]["status"], 200);
+        assert_eq!(
+            result["error"]["code"], "invalid_upstream_shape",
+            "{name}: {result}"
+        );
+        assert_eq!(result["meta"]["http_status"], 200);
         assert!(result["data"].is_null());
         assert_eq!(upstream.state.requests(), [path]);
         upstream.task.abort();
