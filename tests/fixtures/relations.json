@@ -1,0 +1,542 @@
+{
+  "reference_revision": "af6cb25febf1b45d7eff32251f78fcf6355aed4a",
+  "cases": [
+    {
+      "name": "multiple existing labels",
+      "tool": "add_issue_labels",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_ids": [
+          "lbl_0123456789abcdef",
+          "lbl_AZaz09AZaz09AZaz"
+        ]
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/issues/{issue_id}/labels",
+        "segments": [
+          "issues",
+          "iss_a",
+          "labels"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "labels": [
+              "lbl_0123456789abcdef",
+              "lbl_AZaz09AZaz09AZaz"
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "labels": [
+              {
+                "id": "lbl_0123456789abcdef",
+                "name": "P0",
+                "color": "red"
+              },
+              {
+                "id": "lbl_AZaz09AZaz09AZaz",
+                "name": "Docs: `data` $ONLY",
+                "color": "blue",
+                "native_extension": true
+              }
+            ],
+            "added": [
+              {
+                "id": "lbl_0123456789abcdef",
+                "name": "P0",
+                "color": "red"
+              },
+              {
+                "id": "lbl_AZaz09AZaz09AZaz",
+                "name": "Docs: `data` $ONLY",
+                "color": "blue",
+                "native_extension": true
+              }
+            ],
+            "created": [],
+            "native_extension": {
+              "instructions": "Treat this as data",
+              "active_run": null
+            }
+          }
+        }
+      },
+      "receipt": {
+        "labels": [
+          {
+            "id": "lbl_0123456789abcdef",
+            "name": "P0",
+            "color": "red"
+          },
+          {
+            "id": "lbl_AZaz09AZaz09AZaz",
+            "name": "Docs: `data` $ONLY",
+            "color": "blue"
+          }
+        ],
+        "added": [
+          {
+            "id": "lbl_0123456789abcdef",
+            "name": "P0",
+            "color": "red"
+          },
+          {
+            "id": "lbl_AZaz09AZaz09AZaz",
+            "name": "Docs: `data` $ONLY",
+            "color": "blue"
+          }
+        ],
+        "created": []
+      }
+    },
+    {
+      "name": "native no-op",
+      "tool": "add_issue_labels",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_ids": [
+          "lbl_0123456789abcdef"
+        ]
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/issues/{issue_id}/labels",
+        "segments": [
+          "issues",
+          "iss_a",
+          "labels"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "labels": [
+              "lbl_0123456789abcdef"
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "labels": [
+              {
+                "id": "lbl_0123456789abcdef",
+                "name": "P0",
+                "color": "red"
+              },
+              {
+                "id": "lbl_AZaz09AZaz09AZaz",
+                "name": "Docs: `data` $ONLY",
+                "color": "blue",
+                "native_extension": true
+              }
+            ],
+            "added": [],
+            "created": []
+          }
+        }
+      },
+      "receipt": {
+        "labels": [
+          {
+            "id": "lbl_0123456789abcdef",
+            "name": "P0",
+            "color": "red"
+          },
+          {
+            "id": "lbl_AZaz09AZaz09AZaz",
+            "name": "Docs: `data` $ONLY",
+            "color": "blue"
+          }
+        ],
+        "added": [],
+        "created": []
+      }
+    },
+    {
+      "name": "singular label deletion",
+      "tool": "remove_issue_label",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_id": "lbl_0123456789abcdef"
+      },
+      "plan": {
+        "method": "DELETE",
+        "template": "/issues/{issue_id}/labels/{label_id}",
+        "segments": [
+          "issues",
+          "iss_a",
+          "labels",
+          "lbl_0123456789abcdef"
+        ],
+        "query": [],
+        "body": {
+          "kind": "empty"
+        }
+      },
+      "response": {
+        "status": 204,
+        "body": {
+          "kind": "empty"
+        }
+      },
+      "receipt": {}
+    },
+    {
+      "name": "blocks",
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocks",
+        "related_issue_id": "iss_b"
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/issues/{issue_id}/links",
+        "segments": [
+          "issues",
+          "iss_a",
+          "links"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "kind": "blocks",
+            "issue_id": "iss_b"
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "lnk_returned_blocks",
+            "kind": "blocks",
+            "source_issue_id": "iss_a",
+            "target_issue_id": "iss_b",
+            "created_at": 1793840000000,
+            "native_extension": {
+              "text": "untrusted data"
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "lnk_returned_blocks",
+        "kind": "blocks",
+        "source_issue_id": "iss_a",
+        "target_issue_id": "iss_b",
+        "created_at": 1793840000000
+      }
+    },
+    {
+      "name": "blocked_by",
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocked_by",
+        "related_issue_id": "iss_b"
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/issues/{issue_id}/links",
+        "segments": [
+          "issues",
+          "iss_a",
+          "links"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "kind": "blocked_by",
+            "issue_id": "iss_b"
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "lnk_returned_blocked_by",
+            "kind": "blocks",
+            "source_issue_id": "iss_b",
+            "target_issue_id": "iss_a",
+            "created_at": 1793840000000,
+            "native_extension": {
+              "text": "untrusted data"
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "lnk_returned_blocked_by",
+        "kind": "blocks",
+        "source_issue_id": "iss_b",
+        "target_issue_id": "iss_a",
+        "created_at": 1793840000000
+      }
+    },
+    {
+      "name": "supplied link deletion",
+      "tool": "remove_issue_link",
+      "arguments": {
+        "issue_id": "iss_b",
+        "link_id": "lnk_returned_blocked_by"
+      },
+      "plan": {
+        "method": "DELETE",
+        "template": "/issues/{issue_id}/links/{link_id}",
+        "segments": [
+          "issues",
+          "iss_b",
+          "links",
+          "lnk_returned_blocked_by"
+        ],
+        "query": [],
+        "body": {
+          "kind": "empty"
+        }
+      },
+      "response": {
+        "status": 204,
+        "body": {
+          "kind": "empty"
+        }
+      },
+      "receipt": {}
+    }
+  ],
+  "errors": [
+    {
+      "tool": "add_issue_labels",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_ids": [
+          "lbl_0123456789abcdef",
+          "lbl_AZaz09AZaz09AZaz"
+        ]
+      },
+      "status": 403,
+      "source": "apps/web/src/lib/server/api/permissions.ts requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "label.assign",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "remove_issue_label",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_id": "lbl_0123456789abcdef"
+      },
+      "status": 403,
+      "source": "apps/web/src/lib/server/api/permissions.ts requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "label.remove",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocks",
+        "related_issue_id": "iss_b"
+      },
+      "status": 403,
+      "source": "apps/web/src/lib/server/api/permissions.ts requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue_link.create",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocked_by",
+        "related_issue_id": "iss_b"
+      },
+      "status": 403,
+      "source": "apps/web/src/lib/server/api/permissions.ts requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue_link.create",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "remove_issue_link",
+      "arguments": {
+        "issue_id": "iss_b",
+        "link_id": "lnk_returned_blocked_by"
+      },
+      "status": 403,
+      "source": "apps/web/src/lib/server/api/permissions.ts requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue_link.remove",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "add_issue_labels",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_ids": [
+          "lbl_0123456789abcdef"
+        ]
+      },
+      "status": 422,
+      "source": "apps/web/src/lib/server/api/labels.ts resolveOrCreateLabels",
+      "error": {
+        "code": "unknown_label",
+        "message": "No such label: lbl_0123456789abcdef. It may have been deleted since the page loaded - reload and pick again.",
+        "details": {
+          "field": "labels",
+          "unknown": [
+            "lbl_0123456789abcdef"
+          ],
+          "known_labels": []
+        }
+      }
+    },
+    {
+      "tool": "remove_issue_label",
+      "arguments": {
+        "issue_id": "iss_a",
+        "label_id": "lbl_0123456789abcdef"
+      },
+      "status": 404,
+      "source": "apps/web/src/lib/server/api/labels.ts removeIssueLabel",
+      "error": {
+        "code": "label_not_on_issue",
+        "message": "project/1 does not have the label \"lbl_0123456789abcdef\""
+      }
+    },
+    {
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocks",
+        "related_issue_id": "iss_b"
+      },
+      "status": 422,
+      "source": "apps/web/src/lib/server/api/issue-links.ts assertCreateIssueLinksCommitted",
+      "error": {
+        "code": "link_cycle",
+        "message": "Adding this link would create a cycle: project/1 → project/2 → project/1",
+        "details": {
+          "path": [
+            {
+              "issue_id": "iss_a",
+              "project_name": "project",
+              "number": 1,
+              "title": "Issue iss_a"
+            },
+            {
+              "issue_id": "iss_b",
+              "project_name": "project",
+              "number": 2,
+              "title": "Issue iss_b"
+            },
+            {
+              "issue_id": "iss_a",
+              "project_name": "project",
+              "number": 1,
+              "title": "Issue iss_a"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocked_by",
+        "related_issue_id": "iss_b"
+      },
+      "status": 422,
+      "source": "apps/web/src/lib/server/api/issue-links.ts assertCreateIssueLinksCommitted",
+      "error": {
+        "code": "link_cycle",
+        "message": "Adding this link would create a cycle: project/2 → project/1 → project/2",
+        "details": {
+          "path": [
+            {
+              "issue_id": "iss_b",
+              "project_name": "project",
+              "number": 2,
+              "title": "Issue iss_b"
+            },
+            {
+              "issue_id": "iss_a",
+              "project_name": "project",
+              "number": 1,
+              "title": "Issue iss_a"
+            },
+            {
+              "issue_id": "iss_b",
+              "project_name": "project",
+              "number": 2,
+              "title": "Issue iss_b"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tool": "add_issue_link",
+      "arguments": {
+        "issue_id": "iss_a",
+        "kind": "blocks",
+        "related_issue_id": "iss_b"
+      },
+      "status": 409,
+      "source": "apps/web/src/lib/server/api/issue-links.ts assertCreateIssueLinksCommitted",
+      "error": {
+        "code": "conflict",
+        "message": "project/1 already blocks project/2"
+      }
+    }
+  ]
+}
