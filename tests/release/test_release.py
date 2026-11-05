@@ -26,7 +26,7 @@ def environment(**overrides):
                   GITHUB_REF="refs/heads/main", GITHUB_SHA=WORKFLOW_SHA,
                   RELEASE_TAG="v0.1.1", RELEASE_SOURCE=SOURCE_SHA, GITHUB_ACTOR="dstoc", GITHUB_ACTOR_ID="539597",
                   GITHUB_TRIGGERING_ACTOR="dstoc", GITHUB_RUN_ATTEMPT="1", GITHUB_RUN_ID="123",
-                  GH_TOKEN="test-only-token")
+                  GH_TOKEN="test-only-token", RELEASE_ID="41", RELEASE_DRAFT="true")
     result.update(overrides)
     return result
 
@@ -310,6 +310,13 @@ class OrchestrationTests(unittest.TestCase):
         self.patch_http = patch.object(r.Registry, "get", side_effect=self.http)
         self.patch_http.start()
         self.addCleanup(self.patch_http.stop)
+        self.patch_releases = patch.object(r, "Releases")
+        self.api = self.patch_releases.start().return_value
+        self.addCleanup(self.patch_releases.stop)
+        self.api.listing.return_value = [dict(id=41, tag_name="v0.1.1", target_commitish=SOURCE_SHA,
+                                            prerelease=False, draft=True, immutable=False, published_at=None)]
+        self.api.release.return_value = self.api.listing.return_value[0]
+        self.api.evidence.return_value = None
         self.release = r.Release(self.workflow, self.source, self.base / "release/record.json")
         self.release.resolve()
 
@@ -719,6 +726,7 @@ class OrchestrationTests(unittest.TestCase):
         self.manifest_version = "0.1.2"
         (self.source / "Cargo.lock").write_text('[[package]]\nname="tines-mcp"\nversion="0.1.2"\n')
         self.remote_tag_name = "v0.1.2"
+        self.api.release.return_value["tag_name"] = "v0.1.2"
         self.release.resolve()
         self.replies = [unavailable()]
         with self.assertRaises(r.ReleaseError):
@@ -805,8 +813,13 @@ class GitSourceTests(unittest.TestCase):
                 r.resolve(work, state)
             cli = ["python3", str(ROOT / "scripts/release.py"), "resolve", "--workflow", str(work),
                    "--source", str(base / "source"), "--record", str(base / "record.json")]
-            result = subprocess.run(cli, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            row = dict(id=41, tag_name="v0.1.1", target_commitish=sha,
+                       prerelease=False, draft=True, immutable=False, published_at=None)
+            with patch.dict(os.environ, env), patch.object(r, "Releases") as api:
+                api.return_value.listing.return_value = [row]
+                api.return_value.release.return_value = row
+                api.return_value.evidence.return_value = None
+                r.Release(work, base / "source", base / "record.json").resolve()
             self.assertIn(f"source_sha={sha}", (base / "output").read_text())
             # Move only the remote tag; local tag remains the old source.
             git("push", "--force", "origin", "HEAD:refs/tags/v0.1.1")
@@ -855,13 +868,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("group: tines-mcp-release\n  cancel-in-progress: false", workflow)
         permissions = workflow.split("\n  release:\n", 1)[1].split("    permissions:\n", 1)[1].split("    env:\n", 1)[0]
         self.assertEqual(set(permissions.splitlines()),
-                         {"      contents: read", "      packages: write", "      attestations: write", "      id-token: write"})
+                         {"      contents: write", "      packages: write", "      attestations: write", "      id-token: write"})
         self.assertIn("ref: ${{ github.sha }}\n          path: workflow", workflow)
         self.assertIn("ref: ${{ steps.source.outputs.source_sha }}\n          path: source", workflow)
         self.assertEqual(workflow.count("persist-credentials: false"), 2)
         commands = re.findall(r"^        run: (.*)$", workflow, re.M)
         helpers = [c for c in commands if c.startswith("python3")]
-        self.assertEqual([c.split()[2] for c in helpers], ["resolve", "publish", "accept", "report"])
+        self.assertEqual([c.split()[2] for c in helpers], ["resolve", "publish", "accept", "retain", "finalize", "report"])
         for command in helpers:
             self.assertNotIn("${{", command)
             self.assertEqual(command.split()[3:],

@@ -35,8 +35,10 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
+      id: ${{ steps.release.outputs.id }}
+      draft: ${{ steps.release.outputs.draft }}
     steps:
-      - name: Maintain reviewed Rust release PR and create source release after merge
+      - name: Maintain reviewed Rust release PR and prepare draft and source tag after merge
         id: release
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
         with:
@@ -52,11 +54,11 @@ jobs:
       !cancelled() && github.repository == 'dstoc/tines-mcp' && github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'push' && needs.release-please.result == 'success' &&
-        needs.release-please.outputs.release_created == 'true'))
+        needs.release-please.outputs.release_created == 'true' && needs.release-please.outputs.draft == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: read
+      contents: write
       packages: write
       attestations: write
       id-token: write
@@ -64,6 +66,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ github.event_name == 'push' && needs.release-please.outputs.tag_name || inputs.tag }}
       RELEASE_SOURCE: ${{ github.event_name == 'push' && needs.release-please.outputs.sha || inputs.source_sha }}
+      RELEASE_ID: ${{ needs.release-please.outputs.id }}
+      RELEASE_DRAFT: ${{ needs.release-please.outputs.draft }}
       RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
       RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
       RELEASE_PLEASE_RESULT: ${{ needs.release-please.result }}
@@ -112,16 +116,30 @@ jobs:
           create-storage-record: false
       - name: Verify both signed statements, anonymous digest pull and runtime
         run: python3 workflow/scripts/release.py accept --workflow workflow --source source --record release/record.json
+      - name: Retain and read back durable draft evidence
+        id: evidence
+        run: python3 workflow/scripts/release.py retain --workflow workflow --source source --record release/record.json
+      - name: Retain required Actions acceptance evidence
+        id: retention
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: adapter-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish the verified draft last (or verify published release read-only)
+        id: publication
+        run: python3 workflow/scripts/release.py finalize --workflow workflow --source source --record release/record.json
       - name: Record outcome and recovery boundary
         if: always()
         env:
           RELEASE_JOB_STATUS: ${{ job.status }}
         run: python3 workflow/scripts/release.py report --workflow workflow --source source --record release/record.json
-      - name: Retain release evidence (copy successful records to durable release records)
+      - name: Retain attempt diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: adapter-release-${{ github.run_id }}-${{ github.run_attempt }}
+          name: adapter-release-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: release/
           if-no-files-found: error
           retention-days: 90
