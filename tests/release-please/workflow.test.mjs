@@ -88,7 +88,7 @@ test('real workflow conditions handle skipped, failed and cancelled dependencies
   assert.equal(evaluate(workflow.jobs['release-please'].if, context('workflow_dispatch')).coerceString(), 'false');
 });
 
-test('actual environment and helper derive creation only for first 0.1.2 handoff', () => {
+test('actual environment never renews creation for old handoffs, reruns or fresh dispatches', () => {
   for (const attempt of ['1', '2', '', '01']) {
     for (const event of ['push', 'workflow_dispatch']) {
       for (const version of ['0.1.0', '0.1.1', '0.1.2', '0.1.3']) {
@@ -100,7 +100,7 @@ test('actual environment and helper derive creation only for first 0.1.2 handoff
         assert.equal(result.status, 0, result.stderr);
         assert.equal(state.source_sha, sha);
         assert.equal(state.version, version);
-        assert.equal(state.creation_eligible, event === 'push' && version === '0.1.2' && attempt === '1');
+        assert.equal(state.creation_eligible, false);
       }
     }
   }
@@ -117,7 +117,7 @@ test('missing and malformed output reaches no publishing authority', () => {
 });
 
 test('obsolete inputs cannot select creation in the actual workflow', () => {
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ['source_sha', 'tag']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ['incident', 'source_sha', 'tag']);
   assert.equal('RELEASE_MODE' in job.env, false);
   assert.equal('BOOTSTRAP_CONFIRMATION' in job.env, false);
   const manual = context('workflow_dispatch', 'skipped');
@@ -220,4 +220,19 @@ test('automatic job also requires the draft handoff; no-release and malformed ha
   }
   // Actions equality ignores case; the helper supplies exact-string validation.
   assert.notEqual(helper(context('push', 'success', {draft: 'TRUE'})).result.status, 0);
+});
+
+
+test('incident selector is validation only and disabled in actual workflow environment', () => {
+  assert.equal(workflow.on.workflow_dispatch.inputs.incident.required, false);
+  for (const incident of ['42010011054', 'other', 'true']) {
+    for (const attempt of ['1', '2']) {
+      const values = context('workflow_dispatch', 'skipped');
+      Object.assign(values.inputs, {incident});
+      values.github.run_attempt = attempt;
+      assert.equal(admission(values), true);
+      assert.notEqual(helper(values).result.status, 0);
+    }
+  }
+  assert.equal(helper(context('workflow_dispatch', 'skipped')).state.creation_eligible, false);
 });

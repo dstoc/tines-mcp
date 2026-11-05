@@ -273,25 +273,40 @@ class DraftTests(unittest.TestCase):
                 self.assertNotEqual(self.release.state.get("publication"), "published")
 
     def test_documented_workflow_update_authority_denial_preserves_everything(self):
-        self.accepted()
-        self.release.retain()
-        retained = self.assets[0][1]
         for status in (403, 404):
-            def deny(method, path, body=None, host="api.github.com", binary=False):
-                if method == "PATCH":
-                    return status, b'{"message":"denied"}', None, None
-                return self.request(method, path, body, host, binary)
-            with patch.object(r.Releases, "request", side_effect=deny), self.assertRaisesRegex(
-                    r.ReleaseError, f"HTTP {status}"):
-                self.final()
-            self.assertEqual(self.release.state["publication"], "outcome_uncertain")
-            self.assertTrue(self.row["draft"])
-            self.assertEqual(self.assets[0][1], retained)
-            self.assertEqual(self.row["target_commitish"], SOURCE_SHA)
-            self.fresh()
-            self.accepted()
-            self.release.retain()
-        self.assertEqual([m for m, _ in self.mutations()], ["POST"])
+            with self.subTest(status=status):
+                self.setUp()
+                self.accepted(reuse=False)
+                self.release.retain()
+                retained = copy.deepcopy(self.assets)
+                release_before = copy.deepcopy(self.row)
+                pins = {key: self.release.state[key] for key in (
+                    "release_id", "source_sha", "tag", "evidence_id", "evidence_size", "evidence_digest",
+                    "digest", "pinned_image")}
+                patches = []
+
+                def deny(method, path, body=None, host="api.github.com", binary=False):
+                    if method == "PATCH":
+                        patches.append((method, path, body, host))
+                        return status, b'{"message":"SECRET_RESPONSE_MARKER"}', None, None
+                    return self.request(method, path, body, host, binary)
+
+                with patch.object(r.Releases, "request", side_effect=deny):
+                    with self.assertRaisesRegex(r.ReleaseError, f"HTTP {status}"):
+                        self.final()
+                    self.assertEqual(patches, [("PATCH", r.RELEASES + "/41", b'{"draft":false}', "api.github.com")])
+                    # A second call with this uncertain record cannot retry the PATCH.
+                    with self.assertRaisesRegex(r.ReleaseError, "Publication outcome uncertain"):
+                        self.final()
+                self.assertEqual(len(patches), 1)
+                self.assertEqual(self.release.state["publication"], "outcome_uncertain")
+                self.assertTrue(self.release.state["publication_attempted"])
+                self.assertEqual(self.row, release_before)  # exact release ID, source, tag, draft
+                self.assertEqual(self.assets, retained)  # exact asset ID, bytes, size and digest
+                self.assertEqual({key: self.release.state[key] for key in pins}, pins)
+                self.assertEqual(len(self.pushes()), 1)
+                self.assertEqual([m for m, _ in self.mutations()], ["POST"])
+                self.assertNotIn("SECRET_RESPONSE_MARKER", json.dumps(self.release.state))
 
     def test_asset_conflicts_are_never_replaced(self):
         self.accepted()
