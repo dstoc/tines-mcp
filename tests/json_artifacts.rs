@@ -464,6 +464,7 @@ fn discovery_schema_matches_strict_native_fields_and_write_semantics() {
     for tool in definitions {
         let wire = serde_json::to_value(&tool).unwrap();
         assert_eq!(wire["annotations"]["readOnlyHint"], false);
+        assert_eq!(wire["annotations"]["destructiveHint"], tool.name == PUT);
         assert_eq!(wire["annotations"]["idempotentHint"], false);
         assert_eq!(wire["annotations"]["openWorldHint"], true);
         assert!(
