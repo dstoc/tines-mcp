@@ -126,7 +126,7 @@ fn duplicate_and_unknown_tools_cannot_dispatch() {
 }
 
 #[test]
-fn module_ownership_is_allocated_without_advertising_unfinished_tools() {
+fn module_ownership_is_allocated_with_unique_domain_tools() {
     let names: Vec<_> = MODULES.iter().map(|module| module.name).collect();
     assert_eq!(
         names,
@@ -143,7 +143,12 @@ fn module_ownership_is_allocated_without_advertising_unfinished_tools() {
         ]
     );
     let limits = LocalLimits::default();
-    assert!(definitions(&limits).is_empty());
+    let tools = definitions(&limits);
+    let mut tool_names = std::collections::HashSet::new();
+    for tool in &tools {
+        assert!(tool_names.insert(tool.name.as_ref()), "duplicate tool name");
+        assert_ne!(tool.name, "http_request");
+    }
     for module in MODULES {
         assert_eq!(
             (module.prepare)("http_request", Map::new(), &limits)
