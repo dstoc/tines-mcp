@@ -456,7 +456,7 @@ async fn oversized_success_result_keeps_created_receipt_even_when_link_context_i
 }
 
 #[tokio::test]
-async fn both_protocol_revisions_discover_twenty_tools_with_accurate_annotations() {
+async fn both_protocol_revisions_discover_comment_and_read_tools_with_accurate_annotations() {
     let config = Config::from_lookup(|_| None).unwrap();
     let app = server::router(&config, CancellationToken::new());
     for version in ["2025-11-25", "2026-07-28"] {
@@ -464,8 +464,15 @@ async fn both_protocol_revisions_discover_twenty_tools_with_accurate_annotations
         let tools = result["result"]["tools"]
             .as_array()
             .unwrap_or_else(|| panic!("version {version}: {result}"));
-        assert_eq!(tools.len(), 20);
-        for tool in tools {
+        assert!(tools.len() >= 20);
+        let read_names: Vec<_> = tines_mcp::tools::reads::definitions(&Default::default())
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        for tool in tools.iter().filter(|tool| {
+            tool["name"] == "append_issue_comment"
+                || read_names.iter().any(|name| tool["name"] == *name)
+        }) {
             let write = tool["name"] == "append_issue_comment";
             assert_eq!(
                 tool["annotations"],

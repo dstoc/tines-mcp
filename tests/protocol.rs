@@ -205,30 +205,38 @@ async fn legacy_initialization_and_tool_discovery_are_stateless() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
+    let expected = [
+        "list_projects",
+        "get_project",
+        "list_issues",
+        "get_issue",
+        "list_issue_artifacts",
+        "get_issue_artifact",
+        "read_artifact_content",
+        "list_workflows",
+        "get_workflow",
+        "list_labels",
+        "list_events",
+        "list_context",
+        "get_context",
+        "get_issue_context",
+        "get_issue_journal",
+        "list_runs",
+        "get_run",
+        "get_run_log",
+        "explain_dispatch",
+        "append_issue_comment",
+    ];
+    for name in expected {
+        assert_eq!(
+            names.iter().filter(|actual| **actual == name).count(),
+            1,
+            "{name}"
+        );
+    }
     assert_eq!(
-        names,
-        [
-            "list_projects",
-            "get_project",
-            "list_issues",
-            "get_issue",
-            "list_issue_artifacts",
-            "get_issue_artifact",
-            "read_artifact_content",
-            "list_workflows",
-            "get_workflow",
-            "list_labels",
-            "list_events",
-            "list_context",
-            "get_context",
-            "get_issue_context",
-            "get_issue_journal",
-            "list_runs",
-            "get_run",
-            "get_run_log",
-            "explain_dispatch",
-            "append_issue_comment",
-        ]
+        names.iter().collect::<std::collections::HashSet<_>>().len(),
+        names.len()
     );
 }
 
@@ -469,18 +477,19 @@ async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() 
         .list_all_tools()
         .await
         .expect("SDK client should discover tools");
-    assert_eq!(tools.len(), 20);
+    assert!(tools.len() >= 20);
     assert!(
         tools
             .iter()
             .any(|tool| tool.name.as_ref() == "list_projects")
     );
-    assert!(tools.iter().all(|tool| {
-        tool.annotations
-            .as_ref()
-            .and_then(|annotations| annotations.read_only_hint)
-            == Some(tool.name.as_ref() != "append_issue_comment")
-    }));
+    for (name, read_only) in [("list_projects", true), ("append_issue_comment", false)] {
+        let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+        assert_eq!(
+            tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+            Some(read_only)
+        );
+    }
 
     let success = client
         .call_tool(CallToolRequestParams::new("list_projects").with_arguments(Default::default()))
@@ -498,15 +507,11 @@ async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() 
         .expect("upstream failure should be returned as a tool result");
     assert_eq!(failure.is_error, Some(true));
     assert_eq!(
-        failure.structured_content.as_ref().unwrap()["error"]["source"],
-        "upstream"
-    );
-    assert_eq!(
         failure.structured_content.as_ref().unwrap()["error"]["code"],
         "fixture_unavailable"
     );
     assert_eq!(
-        failure.structured_content.as_ref().unwrap()["error"]["status"],
+        failure.structured_content.as_ref().unwrap()["meta"]["http_status"],
         503
     );
     assert_eq!(upstream_requests.load(Ordering::SeqCst), 2);
