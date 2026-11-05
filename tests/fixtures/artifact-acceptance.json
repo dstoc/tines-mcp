@@ -1,0 +1,50 @@
+{
+  "request_limits": {
+    "default": 2097152,
+    "larger": 3145728,
+    "native_decoded_file": 26214400,
+    "result": 524288
+  },
+  "discovery": [
+    {
+      "name": "put_issue_artifact",
+      "read_only": false,
+      "destructive": true,
+      "idempotent": false,
+      "required": ["issue_id", "name"],
+      "excluded": ["expected_version", "expected_artifact_id", "path", "attachment_id"]
+    },
+    {
+      "name": "reaffirm_issue_artifact",
+      "read_only": false,
+      "destructive": false,
+      "idempotent": false,
+      "required": ["issue_id", "name"],
+      "excluded": ["version", "expected_version", "content", "path"]
+    },
+    {
+      "name": "upload_issue_artifact_file",
+      "read_only": false,
+      "destructive": true,
+      "idempotent": false,
+      "required": ["issue_id", "name", "filename", "content_type", "encoding", "content"],
+      "excluded": ["url", "path", "attachment_id", "description", "expected_version"]
+    },
+    {
+      "name": "get_issue_artifact",
+      "read_only": true,
+      "destructive": false,
+      "idempotent": true,
+      "required": ["issue_id", "name"],
+      "excluded": ["expected_artifact_id", "content"]
+    },
+    {
+      "name": "read_artifact_content",
+      "read_only": true,
+      "destructive": false,
+      "idempotent": true,
+      "required": ["issue_id", "name"],
+      "excluded": ["expected_artifact_id", "url", "attachment_id"]
+    }
+  ]
+}

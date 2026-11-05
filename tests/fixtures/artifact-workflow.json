@@ -1,0 +1,32 @@
+{
+  "name": "MCP artifact acceptance",
+  "description": "Disposable artifact-gate fixture. No active states; no agent dispatch.",
+  "initial_state": "Draft",
+  "states": [
+    { "name": "Draft", "category": "backlog" },
+    { "name": "Review", "category": "awaiting_human" },
+    { "name": "Done", "category": "done" }
+  ],
+  "transitions": [
+    {
+      "name": "Submit text",
+      "from": "Draft",
+      "to": "Review",
+      "requires": [{ "artifact": "proposal-text", "type": "text", "content_type": "text/markdown" }]
+    },
+    {
+      "name": "Submit file",
+      "from": "Draft",
+      "to": "Review",
+      "requires": [{ "artifact": "proposal-file", "type": "file", "content_type": "text/markdown" }]
+    },
+    {
+      "name": "Submit wrong type",
+      "from": "Draft",
+      "to": "Review",
+      "requires": [{ "artifact": "proposal-wrong-type", "type": "text", "content_type": "text/markdown" }]
+    },
+    { "name": "Return", "from": "Review", "to": "Draft" },
+    { "name": "Finish", "from": "Draft", "to": "Done" }
+  ]
+}
