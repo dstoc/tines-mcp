@@ -17,7 +17,8 @@ pub struct BoundedContent {
 }
 
 /// Digests a complete bounded source and returns a UTF-8-safe or base64 slice.
-/// The caller resolves and verifies source identity around the byte fetch.
+/// The digest checks byte continuity only. Callers retain the same source selectors;
+/// this helper does not resolve artifact identity or version metadata.
 pub fn bounded_content(
     bytes: &[u8],
     text_source: bool,
