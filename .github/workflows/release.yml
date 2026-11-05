@@ -1,0 +1,107 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable vX.Y.Z source tag (no tag is created)
+        type: string
+        required: true
+      source_sha:
+        description: Full expected source commit SHA
+        type: string
+        required: true
+      mode:
+        description: Normal publication/recovery, or owner-only first publication
+        type: choice
+        options: [normal, bootstrap]
+        default: normal
+        required: true
+      bootstrap_confirmation:
+        description: Fresh exact owner confirmation from docs/releases.md (bootstrap only)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tines-mcp-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'dstoc/tines-mcp' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DOCKER_CONFIG: ${{ runner.temp }}/release-docker
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_SOURCE: ${{ inputs.source_sha }}
+      RELEASE_MODE: ${{ inputs.mode }}
+      BOOTSTRAP_CONFIRMATION: ${{ inputs.bootstrap_confirmation }}
+    steps:
+      - name: Check out release orchestration from selected main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: workflow
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate dispatch, source tag and ancestry
+        id: source
+        run: python3 workflow/scripts/release.py resolve --workflow workflow --source source --record release/record.json
+      - name: Check out the exact application source separately
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.98.1
+      - name: Check versions, registry authority and local runtime; publish once or select existing digest
+        id: image
+        run: python3 workflow/scripts/release.py publish --workflow workflow --source source --record release/record.json
+      - name: Attest build provenance for newly published bytes
+        if: steps.image.outputs.new_image == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ghcr.io/dstoc/tines-mcp
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest exact release source for newly published bytes
+        if: steps.image.outputs.new_image == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ghcr.io/dstoc/tines-mcp
+          subject-digest: ${{ steps.image.outputs.digest }}
+          predicate-type: https://github.com/dstoc/tines-mcp/attestations/release-identity/v1
+          predicate-path: release/release-identity.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify both signed statements, anonymous digest pull and runtime
+        run: python3 workflow/scripts/release.py accept --workflow workflow --source source --record release/record.json
+      - name: Record outcome and recovery boundary
+        if: always()
+        env:
+          RELEASE_JOB_STATUS: ${{ job.status }}
+        run: python3 workflow/scripts/release.py report --workflow workflow --source source --record release/record.json
+      - name: Retain release evidence (copy successful records to durable release records)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: adapter-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove ephemeral registry login
+        if: always()
+        run: rm -rf -- "$DOCKER_CONFIG"
