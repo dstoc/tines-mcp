@@ -37,82 +37,106 @@ Douglas selected a new patch after diagnostics and draft-first changes pass
 independent review. No release PR, version bump, publication, or owner action is
 authorized by this implementation.
 
-## v0.1.2 draft recovery is disabled
+## Exact v0.1.2 draft recovery
 
-The failed run `42010011054`, attempt 1 (workflow `407725245`, run number 18),
-selected draft `435049346`, tag `v0.1.2`, and source
-`bf97287109eaab863d26ed82307d31db7c3c6a71`. Read-only inspection on November 5,
-2026 confirmed the unpublished draft has no assets and the remote tag still
-matches that source. Preserve this draft, tag and source. Do not silently
-substitute a new version.
+The reviewed helper provides one narrow creation path for existing draft
+`435049346`, tag `v0.1.2`, source
+`bf97287109eaab863d26ed82307d31db7c3c6a71`. Implementation approval does not
+authorize live recovery. Preserve that draft, tag, source and published v0.1.1.
+Do not substitute the automatic v0.1.3 Release Please candidate as this recovery.
 
-The supplied incident inspection reports a structured HTTP 404 with only the
-exact-message predicate failing, `stage=no_push_attempted`, and
-`push_attempted=false`. The original message was not retained. Diagnostics
-artifact `13406950249`, named `adapter-release-diagnostics-42010011054-1`,
-is 819 bytes with API-reported digest
+Original run `42010011054`, attempt 1, workflow `407725245`, number 18, failed
+at registry authority. The supervisor's authorized connector log inspection in
+`tines-mcp/40#cmt_9BfqQ0jOQWlbSP4E` reports `no_push_attempted`,
+`push_attempted=false`, and a structured 404 with only `message_exact=false`.
+Proposal review `cmt_HHfAhlg9ORqX2Me6` accepted this attributed evidence,
+corroborated by original identity metadata and source ordering. The original
+helper checks initial registry authority before building and saves
+`push_attempted=true` before its sole push. Skipped later steps alone do not
+prove no push. The actual message is unknown.
+
+Diagnostics artifact `13406950249`,
+`adapter-release-diagnostics-42010011054-1`, has API-reported size 819 and digest
 `sha256:31c9fa47eb29b8dcfbef51358a45d206359fce40f21e8b5226177e1f14362356`.
-Original archive and job-log downloads returned Forbidden in prior runs.
-Metadata was rechecked; those downloads were not retried or bypassed. The
-original bytes, their digest and no-push contents remain independently unverified.
+The runner's earlier archive/log downloads were Forbidden. Those downloads were
+not retried or bypassed. These metadata observations do not claim downloaded or
+independently hashed archive bytes. No archive reader or Actions-read grant is
+part of this path.
 
-The corrected helper has **no unavailable-package creation allowance**. Old
-push handoffs, reruns and new first-attempt dispatches all require positive
-package access. Do not rerun historical workflow code; this patch cannot revoke
-its behavior. The optional `incident` selector accepts only `42010011054` and
-stops before API or engine work because recovery remains disabled. The exact
-incident draft/source also cannot build a missing version inside an accessible
-package. Existing digest verification keeps the ordinary positive-access rules.
+### Separate owner preflight and execution decision
 
-The approved implementation preserves current permissions. It grants no
-`actions: read`. [Downloading an Actions artifact](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact)
-requires Actions read; public metadata access and successful artifact uploads do
-not establish it. A future job-level grant would apply to every invocation of
-that job and requires separate explicit review. It would not resolve this
-runner's Forbidden result or the separate publication restriction below.
+Before execution, CI and independent implementation review must pass. The owner
+must record a fresh decision on tines-mcp/40 that:
 
-The selector changes the workflow relative to the fixed source. With that
-change, the current `GITHUB_TOKEN` path cannot publish the retained-source draft
-under GitHub's workflow-write restriction. Do not build/push before resolving
-this known blocker. Do not probe authority with a live PATCH. No alternate
-credentials, settings change, retargeting, release recreation or tag movement
-is authorized.
+1. Accepts the approved attributed original no-push evidence and accounts for
+   all later publication activity and unresolved pushes. Recheck original
+   run/job/artifact identity and review later runs. Missing or contradictory
+   evidence blocks execution. Do not rerun historical workflow code.
+2. Confirms authoritative current package absence for unavailable-package
+   creation, or exact image-tag absence when the package is accessible.
+   Douglas's earlier absence report is dated evidence. A 404 or access-filtered
+   listing cannot replace current owner evidence.
+3. Excludes all package, image-tag, source-tag, release and asset writers
+   throughout the operation. Preserve the original incident evidence and any
+   recovery marker. Confirm draft/tag identity, current workflows and token
+   policy. Concurrency covers only this workflow's own runs.
+4. Explicitly authorizes **one manual execution from the exact reviewed main
+   SHA**, with only the existing tag/source inputs. This authorization must
+   include the permanent marker upload, image publication, both attestations,
+   anonymous acceptance, durable and Actions evidence retention, and final
+   publication of this same draft.
 
-Before a future enabling change and live execution, a separately authorized
-operator and independent reviewer must:
+Proposal approval, merge, login, a reference string and `creation_eligible`
+supply none of these current facts. The helper records execution attribution;
+it does not verify the external owner decision. No live recovery is authorized
+by this guide or the implementation run.
 
-1. Obtain the original archive through permitted access. Verify the pinned
-   ID/name/size/digest and run/source association, downloaded hash, bounded ZIP
-   contents and explicit no-push record. Inspect original run/job/attempts and
-   code ordering. A denied read, later attempt, missing marker or selected digest
-   blocks recovery. Supplied summaries and metadata cannot replace original bytes.
-2. Establish authoritative owner visibility that the exact package is absent,
-   account for later activity and unresolved pushes, and exclude all other
-   package, image-tag, release, asset and source-tag writers for the operation.
-   Access-filtered lists and package 404s do not prove absence or authorization.
-3. Separately review Actions read authority and identify a permitted publication
-   path for this exact draft/source. Compare all workflow path/blob identities
-   at fixed source, reviewed orchestration and current default branch, including
-   additions/deletions. Recheck current default immediately before execution.
-   Unknown, stale or denied comparisons block creation. Owner consent and
-   Actions read cannot supply workflow-write authority to `GITHUB_TOKEN`.
-4. After CI and independent implementation review, pin one future run number
-   for workflow `407725245` in reviewed code. No number is currently selected.
-   Bind dispatch/main, attempt 1, executing run identity and workflow SHA to
-   the exact incident, source and draft. Reruns and new first-attempt dispatches
-   cannot renew a consumed opportunity; intervening activity requires fresh review.
-5. Obtain separate owner/publication authorization for those exact coordinates,
-   byte pins, package absence, exclusive writers and publication path before
-   execution. Proposal approval, PR approval and a reference string do not
-   supply these facts. Keep recovery disabled if any blocker remains.
+### One durable attempt before either creation path
 
-`scripts/release_incident.py` contains offline checks with synthetic fixtures.
-It has no CLI, network client or production caller and returns no creation
-eligibility. Its run-number pin is unset. It prepares validation for review;
-it does not implement authorized download or execution. A future enabling
-change must wire permitted authenticated reads, complete enumeration, preflight
-and evidence retention through review before reusing the shared publication path.
-See the [approved proposal](proposals/package-response-draft-recovery.md).
+Only a manual main dispatch at attempt exactly `1`, with the fixed tag/source
+and release ID, may request creation. Push handoffs and reruns cannot. Fresh
+attempt-1 dispatches alone cannot renew creation: before building, the helper
+completely enumerates draft assets and uploads
+`adapter-recovery-42010011054.json` **once**. Only a successful HTTP 201 and
+exact readback in that admitting attempt can permit the build. Any existing
+marker, including a partial or malformed asset, blocks creation. Discovery of
+a matching marker cannot authorize a fresh build. The same gate covers a
+missing version in an accessible package.
+
+The marker records fixed incident run/job/artifact coordinates, the attributed
+evidence reference, release/tag/source, executing workflow SHA, run/attempt and
+actor. It means an attempt was admitted; it does not prove no push, acceptance
+or publication. Its ID, size, digest and original bytes are pinned locally and
+in new durable acceptance evidence. Rechecks before push and later release
+writes reject a removed, replaced or changed marker. Existing acceptance bytes
+are reused unchanged.
+
+Never delete, replace, rename, reset or repair the marker. Duplicate upload,
+partial asset, response loss, save failure or failed readback stops without a
+retry or fallback. A failure before push can consume this opportunity and
+require another reviewed adjustment. Deleting diagnostics does not restore
+creation authority. The guarantee depends on the owner excluding writers and
+preserving the marker; the asset is not administrator-immutable while draft.
+After any possible push, recovery requires positive package access and both
+verified signed statements. A hidden package cannot reopen creation. Existing
+digests receive zero builds, pushes, retags or new attestations.
+
+### Retained-target workflow comparison
+
+All files under `.github/workflows/` match the fixed source byte for byte,
+including modes. The dispatch inputs remain only `tag` and `source_sha`; job
+permissions and phases are unchanged. Before incident marker upload/build,
+push and later release writes, the helper compares the complete workflow trees
+and requires remote default main to equal the executing SHA. Additions,
+deletions, mode/content changes, denied reads or default-branch drift stop it.
+Under [GitHub's update-release rule](https://docs.github.com/en/rest/releases/releases#update-a-release),
+this equality removes the specific retained-target workflow-difference
+condition. It does not establish live token authority. No live PATCH probe was
+performed. A remaining 403/404 preserves the draft, tag, source, image digest,
+marker and acceptance evidence and records publication uncertainty. Do not
+retry blindly or use another credential.
+
+See the [approved proposal v3](proposals/package-response-draft-recovery.md).
 
 ## Package response contract
 
@@ -126,8 +150,8 @@ the unknown incident message might still fail the new shape requirement.
 [GitHub documents masked-resource 404s](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#404-not-found-for-an-existing-resource).
 Absent and hidden packages can return identical responses.
 
-Production requires positive-access package identity and complete active-version
-enumeration. Every version-list 404 fails. Redirects, 401/403/429/5xx, malformed
+Outside the exact incident creation gate, production requires positive-access
+package identity and complete active-version enumeration. Every version-list 404 fails. Redirects, 401/403/429/5xx, malformed
 or oversized responses, duplicate fields, invalid constants, transport failures
 and unexpected pagination never establish absence. Login cannot prove read or
 publication authority. If a version exists, recovery selects its verified digest
@@ -135,8 +159,8 @@ without replacement; no-overwrite and exclusive writers remain required.
 
 Metadata diagnostics now use schema version 2. They retain `message_exact` only
 as historical information and add boolean/null `message_string` and
-`message_nonempty`. The offline original-evidence reader also accepts version 1
-without inventing the new fields. No raw message/body/header, exception text or
+`message_nonempty`. Historical version 1 diagnostics remain attributed evidence;
+the helper does not reconstruct them or invent the new fields. No raw message/body/header, exception text or
 message hash is retained. Diagnostics do not enter the durable acceptance asset.
 
 After any image push, positive package metadata, repository association,
@@ -146,8 +170,8 @@ The owner must separately [make the package public](https://docs.github.com/en/p
 if anonymous acceptance fails for visibility. Recover using the same signed
 digest after that action. The workflow does not change visibility or credentials.
 If its token cannot read the new package, investigate repository association and
-Actions access; a 404 does not reopen creation. Any future incident creation
-allowance must be removed through review after its single opportunity.
+Actions access; a 404 does not reopen creation. Remove the incident creation allowance through review after its consumed
+opportunity is resolved. Never remove its retained marker.
 
 ## Later releases and authority
 
@@ -170,8 +194,8 @@ The publisher uses its ephemeral Actions token with `contents: write`,
 `packages: write`, `attestations: write`, and `id-token: write`. Artifact storage
 record creation is disabled for this personal-account repository. The workflow
 needs no Tines token, PAT, `artifact-metadata` permission, or administration access.
-The contents write capability permits only the draft evidence upload and final
-publication in this helper. It does not permit release creation, tag repair,
+The contents write capability permits the fixed incident marker upload, draft
+acceptance evidence upload and final publication in this helper. It does not permit release creation, tag repair,
 asset replacement, or published-release edits. Ephemeral authenticated Docker
 configuration is removed unconditionally.
 Anonymous pulls use a separate temporary configuration without credentials.
@@ -180,8 +204,8 @@ For an established package, the job's token must read
 `GET /users/dstoc/packages/container/tines-mcp`, validate its owner/repository
 identity, and enumerate every active version page. Only complete enumeration
 inside that positively accessible package can establish an absent version tag.
-A 404 stops ordinary publication and recovery. Successful login does not prove
-metadata or enumeration authority. Local fixtures do not establish live token
+A 404 stops ordinary publication and recovery outside the fixed incident gate.
+Successful login does not prove metadata or enumeration authority. Local fixtures do not establish live token
 behavior; retain that evidence in the separately authorized first publication.
 
 Restrict source-tag, release, asset and package writers throughout every run. Workflow concurrency
@@ -222,9 +246,10 @@ confirmation values.
 An existing version selects its digest with zero builds, pushes, retags, or new
 attestations. Both signed statements, source identity, OCI labels, anonymous pull,
 and runtime must pass. An incomplete or conflicting image stops recovery.
-A still-absent package cannot be created by manual dispatch or an ordinary rerun,
-even when the first attempt failed before pushing. Preserve proof of no push
-and request a narrowly reviewed workflow adjustment for another creation attempt.
+A still-unavailable package can be created only through the fixed incident
+gate above. Other manual dispatches and ordinary reruns cannot create it, even
+when an earlier attempt failed before pushing. Preserve no-push evidence and
+request a reviewed adjustment if no creation path applies.
 Do not use the superseded `0.1.0` bootstrap. Release Please might not re-emit
 release outputs on rerun; missing outputs confer no authority.
 
@@ -235,8 +260,9 @@ The sequence is enforced by the workflow and the helper:
 1. Release Please prepares a draft and forces source-tag creation before it.
    The helper checks the full release target, local/remote tag commits (including
    annotated tags), main ancestry, separate source checkout, and both Cargo versions.
-   A successful action result is insufficient: the pinned library ignores tag-create
-   422 responses and can fail after draft creation but before returning outputs.
+   The fixed incident creation path consumes and reads back its permanent marker
+   before building. A successful action result is insufficient: the pinned library
+   ignores tag-create 422 responses and can fail after draft creation but before returning outputs.
 2. Build/test/push once or select the existing digest under the package checks.
 3. Attest new bytes only. Verify signed provenance and exact-source identity,
    original signer, anonymous digest pull, OCI labels/platform/user and runtime.
@@ -250,8 +276,10 @@ The sequence is enforced by the workflow and the helper:
 The durable JSON asset is capped at 8 MiB. Schema version 1 records repository,
 release ID, tag, version, source, platform, package ID, digest, original signer,
 acceptance workflow/run/actor attribution and registry observations, plus both
-verified attestation results and explicit acceptance/runtime results. It contains
-an allowlisted acceptance snapshot, not process environment or a publication claim.
+verified attestation results and explicit acceptance/runtime results. New incident
+evidence also includes a strictly validated optional recovery pin; older evidence
+remains readable and is reused byte for byte. The asset contains an allowlisted
+acceptance snapshot, not process environment or a publication claim.
 
 An existing asset is never deleted, replaced or rewritten for the recovery run.
 Its original acceptance execution may differ, but source/package/digest and
@@ -300,7 +328,7 @@ The main stages are:
 
 | Stage | Evidence and next action |
 | --- | --- |
-| `no_push_attempted` | This record has no push dispatch. Inspect all prior evidence. Recovery requires positive package access; a still-absent package needs a narrowly reviewed creation adjustment. |
+| `no_push_attempted` | This record has no push dispatch. Inspect all prior evidence. Inspect the fixed incident marker and owner decision. A consumed marker never permits another build; other unavailable packages need a reviewed adjustment. |
 | `push_attempted_outcome_uncertain` | A push was dispatched, but its result is not established. Investigate through positive-access recovery only. |
 | `digest_observed` | A digest was selected or returned by a push. Publication can be partial; acceptance is incomplete. |
 | `identity_verified` | Both signed statements match. Public pull/runtime or final consistency checks can still fail. |
@@ -362,8 +390,9 @@ package repositories can change its bytes.
 
 - **Before any push:** fix the source, workflow, or access problem through normal
   review. A changed release source needs a new version/tag. If the package is
-  still absent, preserve proof of no push and request a narrowly reviewed
-  creation adjustment. Ordinary reruns and dispatches cannot reopen creation.
+  still unavailable, only the unconsumed fixed incident gate can create it after
+  separate authorization. A consumed marker requires a reviewed adjustment.
+  Ordinary reruns cannot reopen creation.
 - **Ambiguous push, post-push lookup failure, or missing evidence:** investigate
   as partial/uncertain publication. Recovery requires positive package access.
   A package 404 or denied enumeration requires owner investigation. Deletion,
@@ -436,8 +465,9 @@ Release tests mock registry/engine commands and test the actual shared shell
 script. The Node suite runs Release Please 17.3.0 (bundled in the pinned action)
 against a read-only fake GitHub client and evaluates actual workflow expressions.
 It checks synchronized versions, unchanged dependencies, no-release updates,
-malformed handoffs, skipped/failed jobs, disabled incident admission, unchanged permission maps, and strict
-recovery. These tests do not publish or establish live Actions-token authority. actionlint checks actual
+malformed handoffs, skipped/failed jobs, fixed incident admission through both
+missing-version paths, unchanged permission maps, and strict recovery. These tests
+do not publish or establish live Actions-token authority. actionlint checks actual
 workflow syntax and Actions contexts. CI keeps these checks, the Rust suite, and
 the real container build/runtime check. A separately authorized
 live publication must still establish GHCR access, both signed statements,

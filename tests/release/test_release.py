@@ -372,8 +372,8 @@ class OrchestrationTests(unittest.TestCase):
         return [c for c, *_ in self.commands if c[:2] == ("docker", "push")]
 
     def admit_synthetic_creation(self):
-        # Hypothetical admitted creation, ONLY inside this offline fixture. Production
-        # dispatch is separately tested and can never return creation_eligible=True.
+        # Hypothetical admitted creation, ONLY inside this offline fixture.
+        # Production admission for the fixed incident is tested separately.
         original = r.dispatch
         def admitted(env):
             return dict(original(env), creation_eligible=(env.get("GITHUB_EVENT_NAME") == "push"
@@ -874,7 +874,7 @@ class WorkflowTests(unittest.TestCase):
         triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["push", "workflow_dispatch"])
         self.assertNotIn("bootstrap", triggers)
-        self.assertEqual(re.findall(r"^      ([a-z_]+):", triggers, re.M), ["tag", "source_sha", "incident"])
+        self.assertEqual(re.findall(r"^      ([a-z_]+):", triggers, re.M), ["tag", "source_sha"])
         self.assertIn("group: tines-mcp-release\n  cancel-in-progress: false", workflow)
         permissions = workflow.split("\n  release:\n", 1)[1].split("    permissions:\n", 1)[1].split("    env:\n", 1)[0]
         self.assertEqual(set(permissions.splitlines()),

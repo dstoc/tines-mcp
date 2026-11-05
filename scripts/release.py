@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GHCR release checks. Unavailable-package creation is disabled pending separately reviewed authority."""
+"""GHCR release checks. Live execution requires separate owner publication authorization."""
 
 import argparse
 import http.client
@@ -27,6 +27,10 @@ DIGEST = r"sha256:[0-9a-f]{64}"
 TAG = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 PACKAGE_BODY_LIMIT = 8 * 1024 * 1024
 METADATA_PURPOSES = frozenset({"initial_authority", "prepush", "postpush", "acceptance", "finalization"})
+INCIDENT_SOURCE = "bf97287109eaab863d26ed82307d31db7c3c6a71"
+INCIDENT_RELEASE = 435049346
+RECOVERY_ASSET = "adapter-recovery-42010011054.json"
+NO_PUSH_EVIDENCE = "tines-mcp/40#cmt_9BfqQ0jOQWlbSP4E"
 
 
 class ReleaseError(Exception):
@@ -114,12 +118,17 @@ def dispatch(env):
         require(env.get("RELEASE_DRAFT") == "true" and
                 re.fullmatch(r"[1-9][0-9]*", env.get("RELEASE_ID", "")),
                 "Draft release ID handoff required")
-    selector = env.get("RELEASE_INCIDENT", "")
-    require(selector in ("", "42010011054"), "Unknown release incident")
-    require(not selector, "Incident 42010011054 recovery is disabled: original bytes, Actions read, "
-            "publication authority and a reviewed run opportunity remain unresolved")
-    # Historical handoffs and fresh attempt-1 dispatches confer no creation authority.
-    creation_eligible = False
+    require(not env.get("RELEASE_INCIDENT"), "Obsolete incident selector supplied")
+    # Eligibility permits only an unavailable observation, never a build by itself.
+    # The persistent marker must be acquired in this attempt before either creation path.
+    creation_eligible = (event == "workflow_dispatch" and env.get("GITHUB_RUN_ATTEMPT") == "1"
+                         and tag == "v0.1.2" and sha == INCIDENT_SOURCE)
+    if creation_eligible:
+        require(re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", ""))
+                and env["GITHUB_RUN_ID"] != "42010011054"
+                and all(isinstance(env.get(key), str) and bool(env[key]) for key in
+                        ("GITHUB_ACTOR", "GITHUB_ACTOR_ID", "GITHUB_TRIGGERING_ACTOR")),
+                "Recovery execution identity missing or historical")
     return dict(tag=tag, version=tag[1:], source_sha=sha, workflow_sha=env["GITHUB_SHA"],
                 platform="linux/amd64", creation_eligible=creation_eligible, image=f"{IMAGE}:{tag[1:]}",
                 actor=env.get("GITHUB_ACTOR"), actor_id=env.get("GITHUB_ACTOR_ID"),
@@ -149,6 +158,37 @@ def resolve(workflow, state):
             == state["source_sha"], "Local tag/source mismatch")
     run("git", "merge-base", "--is-ancestor", state["source_sha"], "HEAD", cwd=workflow)
     remote_tag(workflow, state)
+
+
+def incident(state):
+    return state["tag"] == "v0.1.2" and state["source_sha"] == INCIDENT_SOURCE
+
+
+def recovery_workflows(workflow, state):
+    """Read-only check of the complete workflow tree and current default branch."""
+    def main():
+        lines = run("git", "ls-remote", "--symref", "origin", "HEAD", "refs/heads/main", cwd=workflow)
+        require(set(lines.splitlines()) == {"ref: refs/heads/main\tHEAD",
+                f"{state['workflow_sha']}\tHEAD", f"{state['workflow_sha']}\trefs/heads/main"}
+                and len(lines.splitlines()) == 3, "Default main changed or workflow comparison is stale")
+
+    def tree(sha):
+        raw = run("git", "ls-tree", "-rz", "--full-tree", sha, "--", ".github/workflows/", cwd=workflow)
+        rows = raw.split("\0")
+        require(rows[-1] == "" and len(rows) > 1, "Missing workflow tree")
+        files = {}
+        for row in rows[:-1]:
+            match = re.fullmatch(r"(100644|100755) blob ([0-9a-f]{40})\t(\.github/workflows/[^\0]+)", row)
+            require(match is not None and match[3] not in files, "Invalid workflow tree")
+            files[match[3]] = (match[1], match[2])
+        return files
+
+    require(incident(state) and state["release_id"] == INCIDENT_RELEASE, "Wrong recovery draft/source")
+    require(run("git", "rev-parse", "HEAD", cwd=workflow) == state["workflow_sha"],
+            "Recovery workflow checkout changed")
+    main()
+    require(tree(INCIDENT_SOURCE) == tree(state["workflow_sha"]), "Complete workflow tree differs from source")
+    main()
 
 
 def source_version(source, state):
@@ -478,10 +518,10 @@ class Releases:
         require(status == 200 and 0 < len(body) <= MAX_EVIDENCE, "Asset download failed or exceeded bound")
         return body
 
-    def evidence(self, identifier):
+    def named_asset(self, identifier, name):
         rows = self.listing(f"{RELEASES}/{identifier}/assets")
-        matches = [row for row in rows if row.get("name") == EVIDENCE]
-        require(len(matches) <= 1, "Duplicate durable evidence assets")
+        matches = [row for row in rows if row.get("name") == name]
+        require(len(matches) <= 1, "Duplicate retained assets")
         if not matches:
             return None
         row = matches[0]
@@ -492,6 +532,9 @@ class Releases:
         require(len(body) == row["size"] and row.get("digest") == content_digest(body),
                 "Durable evidence size/digest mismatch")
         return row, body
+
+    def evidence(self, identifier):
+        return self.named_asset(identifier, EVIDENCE)
 
 
 def release_identity(row, state):
@@ -510,7 +553,39 @@ def release_identity(row, state):
 
 SNAPSHOT_FIELDS = ("tag", "version", "source_sha", "platform", "package_id", "digest", "pinned_image",
                    "original_workflow_sha", "workflow_sha", "run_url", "run_id", "run_attempt", "actor", "actor_id",
-                   "triggering_actor", "creation_eligible", "package_observation", "prepush_package_observation")
+                   "triggering_actor", "creation_eligible", "package_observation", "prepush_package_observation",
+                   "recovery")
+
+
+def recovery_marker(state):
+    return dict(schema_version=1, incident_run_id=42010011054, incident_job_id=127186429900,
+                incident_artifact_id=13406950249, no_push_evidence=NO_PUSH_EVIDENCE,
+                release_id=INCIDENT_RELEASE, tag="v0.1.2", source_sha=INCIDENT_SOURCE,
+                **{key: state[key] for key in ("workflow_sha", "run_id", "run_attempt", "actor", "actor_id",
+                                              "triggering_actor")})
+
+
+def marker_bytes(marker):
+    return (json.dumps(marker, indent=2) + "\n").encode()
+
+
+def validate_recovery(pin, state):
+    require(incident(state) and state["release_id"] == INCIDENT_RELEASE
+            and isinstance(pin, dict) and set(pin) == {"asset_id", "size", "digest", "marker"}
+            and positive_id(pin.get("asset_id")) and type(pin.get("size")) is int
+            and 0 < pin["size"] <= 4096, "Invalid recovery asset pin")
+    marker = pin.get("marker")
+    require(isinstance(marker, dict) and type(marker.get("schema_version")) is int
+            and all(isinstance(marker.get(key), str) and bool(marker[key]) for key in
+                    ("workflow_sha", "run_id", "run_attempt", "actor", "actor_id", "triggering_actor"))
+            and re.fullmatch(SHA, marker["workflow_sha"])
+            and re.fullmatch(r"[1-9][0-9]*", marker["run_id"]) and marker["run_id"] != "42010011054"
+            and marker["run_attempt"] == "1" and marker == recovery_marker(marker),
+            "Invalid recovery marker coordinates")
+    body = marker_bytes(marker)
+    require(len(body) == pin["size"] and content_digest(body) == pin.get("digest"),
+            "Recovery marker byte pin mismatch")
+    return body
 
 
 def evidence_document(state, directory):
@@ -553,6 +628,9 @@ def validate_evidence(body, state, fresh=True):
     for field, predicate in (("provenance", PROVENANCE), ("identity", PREDICATE)):
         require(verified_identity(value.get(field), snapshot, predicate) == snapshot["original_workflow_sha"],
                 "Durable evidence original signer mismatch")
+    if "recovery" in snapshot:
+        validate_recovery(snapshot["recovery"], state)
+        require(snapshot["recovery"] == state.get("recovery"), "Durable evidence recovery marker changed or missing")
     if fresh:
         require(all(snapshot[key] == state[key] for key in
                     ("package_id", "digest", "pinned_image", "original_workflow_sha")),
@@ -590,6 +668,13 @@ class Release:
                     "Automatic handoff must select the exact draft")
         self.save(release_id=row["id"], release_draft=row["draft"], immutable=row["immutable"])
         self.check_release()
+        if incident(self.state):
+            recovery_workflows(self.workflow, self.state)
+            marker = api.named_asset(row["id"], RECOVERY_ASSET)
+            if marker is not None:
+                self.pin_marker(*marker)
+            else:
+                require("recovery" not in self.state, "Pinned recovery marker missing")
         asset = api.evidence(row["id"])
         require(row["draft"] or asset is not None,
                 "Published legacy release has no evidence; no backfill authorized")
@@ -602,6 +687,52 @@ class Release:
         row = release_identity(Releases(os.environ.get("GH_TOKEN", "")).release(self.state["release_id"]), self.state)
         require(row["draft"] == self.state["release_draft"], "Release publication state changed externally")
         return row
+
+    def pin_marker(self, row, body):
+        pin = dict(asset_id=row["id"], size=len(body), digest=content_digest(body), marker=read_json(body))
+        require(validate_recovery(pin, self.state) == body, "Recovery marker bytes changed")
+        require("recovery" not in self.state or self.state["recovery"] == pin,
+                "Pinned recovery marker changed; never replace it")
+        self.save(recovery=pin)
+
+    def check_recovery(self):
+        if incident(self.state):
+            recovery_workflows(self.workflow, self.state)
+            if "recovery" in self.state:
+                pin = self.state["recovery"]
+                body = validate_recovery(pin, self.state)
+                asset = Releases(os.environ.get("GH_TOKEN", "")).named_asset(self.state["release_id"], RECOVERY_ASSET)
+                require(asset is not None and asset[0]["id"] == pin["asset_id"] and asset[1] == body,
+                        "Pinned recovery marker changed or missing")
+
+    def acquire_marker(self):
+        require(self.state["creation_eligible"] and incident(self.state)
+                and self.state["release_id"] == INCIDENT_RELEASE
+                and self.state["release_draft"] and not self.state.get("evidence_id"),
+                "Exact incident first-attempt dispatch required for creation")
+        require(not self.state.get("marker_upload_attempted") and "recovery" not in self.state,
+                "Recovery opportunity already consumed; never reset or replace the marker")
+        self.check_release()
+        remote_tag(self.workflow, self.state)
+        self.check_recovery()
+        api = Releases(os.environ.get("GH_TOKEN", ""))
+        rows = api.listing(f"{RELEASES}/{self.state['release_id']}/assets")
+        require(not any(row.get("name") in (RECOVERY_ASSET, EVIDENCE) for row in rows),
+                "Existing recovery marker or acceptance evidence; no creation authorized")
+        body = marker_bytes(recovery_marker(self.state))
+        require(len(body) <= 4096, "Recovery marker too large")
+        # Save before the single POST. This record cannot retry an uncertain
+        # upload. Any remote marker blocks creation in every fresh run too.
+        self.save(marker_upload_attempted=True, operation="recovery_marker_upload")
+        row, link = api.json("POST", f"{RELEASES}/{self.state['release_id']}/assets?name={RECOVERY_ASSET}",
+                             body, expected=201, host="uploads.github.com")
+        require(link is None and isinstance(row, dict) and positive_id(row.get("id"))
+                and row.get("name") == RECOVERY_ASSET and row.get("state") == "uploaded"
+                and type(row.get("size")) is int and row["size"] == len(body)
+                and row.get("content_type") == "application/json" and row.get("digest") == content_digest(body),
+                "Recovery marker upload response mismatch; preserve all resources")
+        self.pin_marker(row, body)
+        self.check_recovery()
 
     def pin_evidence(self, row, body):
         (self.record.parent / EVIDENCE).write_bytes(body)
@@ -648,10 +779,9 @@ class Release:
             return
         require(self.state["release_draft"] and not self.state.get("evidence_id"),
                 "Published release or retained evidence requires an existing image; no build authorized")
-        require(not (self.state["release_id"] == 435049346
-                     or (self.state["tag"] == "v0.1.2" and self.state["source_sha"] ==
-                         "bf97287109eaab863d26ed82307d31db7c3c6a71")),
-                "Exact incident image creation is disabled pending reviewed publication authority")
+        if incident(self.state) or self.state["release_id"] == INCIDENT_RELEASE:
+            self.acquire_marker()
+            self.check_recovery()
         build = ["docker", "build", "--platform", "linux/amd64", "--file", str(self.source / "Containerfile"),
                  "--tag", self.state["image"]]
         for key, value in labels(self.state).items():
@@ -669,6 +799,7 @@ class Release:
         require(before_id == package_id and before_digest is None,
                 "Package identity changed or tag appeared; restart through positive-access recovery")
         require(inspect_image(self.state["image"], self.state) == image_id, "Local image changed")
+        self.check_recovery()
         # Persist BEFORE dispatch. Any error or termination after this point is uncertain.
         self.save(push_attempted=True, stage="push_attempted_outcome_uncertain", reused=False)
         pushed = run("docker", "push", self.state["image"])
@@ -722,6 +853,7 @@ class Release:
                 and self.state.get("stage") == "public_runtime_acceptance_complete", "Image acceptance required")
         self.check_release()
         remote_tag(self.workflow, self.state)
+        self.check_recovery()
         api = Releases(os.environ.get("GH_TOKEN", ""))
         asset = self.check_evidence() if self.state.get("evidence_id") else api.evidence(self.state["release_id"])
         if asset is None:
@@ -733,6 +865,7 @@ class Release:
             validate_evidence(body, self.state)
             self.check_release()
             remote_tag(self.workflow, self.state)
+            self.check_recovery()
             self.save(operation="evidence_upload", evidence_upload_attempted=True)
             api.json("POST", f"{RELEASES}/{self.state['release_id']}/assets?name={EVIDENCE}",
                      body, expected=201, host="uploads.github.com")
@@ -754,12 +887,14 @@ class Release:
         require(package_id == self.state["package_id"] and digest == self.state["digest"],
                 "Publication package identity/digest conflict")
         self.check_evidence()
+        self.check_recovery()
         if not self.state["release_draft"]:
             self.save(publication="already_published_read_only", operation="complete")
             return
         require(not self.state.get("publication_attempted"), "Publication outcome uncertain; use fresh discovery")
         self.check_release()
         remote_tag(self.workflow, self.state)
+        self.check_recovery()
         self.save(publication_attempted=True, publication="outcome_uncertain", operation="github_publication")
         api = Releases(os.environ.get("GH_TOKEN", ""))
         row, _ = api.json("PATCH", f"{RELEASES}/{self.state['release_id']}", b'{"draft":false}')
@@ -775,6 +910,12 @@ class Release:
             self.save(validation="incomplete", next_action=(
                 "Positive-access investigation only; never reopen creation after any possible push"
                 if self.state.get("push_attempted") or self.state.get("digest") else
+                "Recovery opportunity consumed or uncertain; preserve marker and diagnostics, never reset or "
+                "retry creation. Positive-access recovery or another reviewed adjustment is required"
+                if self.state.get("marker_upload_attempted") or self.state.get("recovery") else
+                "Inspect all prior evidence and obtain fresh owner authorization; only the exact unconsumed "
+                "incident gate can create an unavailable package. Ordinary reruns cannot create"
+                if self.state.get("tag") == "v0.1.2" and self.state.get("source_sha") == INCIDENT_SOURCE else
                 "Inspect failure; recovery requires positive package access. If still absent, preserve proof "
                 "of no push and request a narrowly reviewed creation adjustment; ordinary reruns cannot create"))
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
