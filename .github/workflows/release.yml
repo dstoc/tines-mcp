@@ -13,16 +13,6 @@ on:
         description: Full expected source commit SHA
         type: string
         required: true
-      mode:
-        description: Normal publication/recovery, or owner-only first publication
-        type: choice
-        options: [normal, bootstrap]
-        default: normal
-        required: true
-      bootstrap_confirmation:
-        description: Fresh exact owner confirmation from docs/releases.md (bootstrap only)
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -74,8 +64,6 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ github.event_name == 'push' && needs.release-please.outputs.tag_name || inputs.tag }}
       RELEASE_SOURCE: ${{ github.event_name == 'push' && needs.release-please.outputs.sha || inputs.source_sha }}
-      RELEASE_MODE: ${{ github.event_name == 'push' && 'normal' || inputs.mode }}
-      BOOTSTRAP_CONFIRMATION: ${{ inputs.bootstrap_confirmation }}
       RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
       RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
       RELEASE_PLEASE_RESULT: ${{ needs.release-please.result }}

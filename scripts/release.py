@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GHCR release checks. No registry errors mean absence in normal mode."""
+"""GHCR release checks. Package creation is limited to the first genuine 0.1.1 handoff."""
 
 import argparse
 import http.client
@@ -86,11 +86,6 @@ def output(**values):
             stream.write(f"{key}={value}\n")
 
 
-def confirmation(sha):
-    return (f"CREATE {IMAGE}:0.1.0 FROM {sha}; OWNER CHECKED PACKAGE ABSENT; "
-            "NO UNRESOLVED PRIOR PUSH")
-
-
 def dispatch(env):
     require(env.get("GITHUB_REPOSITORY") == REPO, "Wrong repository")
     event = env.get("GITHUB_EVENT_NAME")
@@ -100,29 +95,21 @@ def dispatch(env):
     tag, sha = env.get("RELEASE_TAG", ""), env.get("RELEASE_SOURCE", "")
     require(re.fullmatch(TAG, tag), "Use a stable vX.Y.Z tag without leading zeroes")
     require(re.fullmatch(SHA, sha), "Use the full lowercase source SHA")
-    mode = env.get("RELEASE_MODE", "normal")
-    require(mode in ("normal", "bootstrap"), "Invalid publication mode")
-    given = env.get("BOOTSTRAP_CONFIRMATION", "")
+    require(not env.get("RELEASE_MODE") and not env.get("BOOTSTRAP_CONFIRMATION"),
+            "Obsolete publication mode/confirmation supplied; use the reviewed workflow")
     if event == "push":
         require(env.get("RELEASE_PLEASE_RESULT") == "success"
                 and env.get("RELEASE_CREATED") == "true", "Successful release-created handoff required")
         require(env.get("RELEASE_VERSION") == tag[1:], "Release Please tag/version mismatch")
-        require(mode == "normal", "Automatic publication is normal mode only")
-    if mode == "bootstrap":
-        require(tag == "v0.1.0", "Bootstrap is limited to v0.1.0")
-        require(env.get("GITHUB_ACTOR_ID") == "539597"
-                and env.get("GITHUB_ACTOR") == "dstoc"
-                and env.get("GITHUB_TRIGGERING_ACTOR") == "dstoc", "Bootstrap requires dstoc")
-        require(env.get("GITHUB_RUN_ATTEMPT") == "1", "Never rerun bootstrap")
-        require(given == confirmation(sha), "Fresh source-bound owner confirmation required")
-    else:
-        require(not given, "Normal mode forbids bootstrap confirmation")
+    # This allowance is not proof of absence: release authorization must establish
+    # authoritative owner absence, exclusive writers, and no unresolved prior push.
+    creation_eligible = (event == "push" and tag == "v0.1.1"
+                         and env.get("GITHUB_RUN_ATTEMPT") == "1")
     return dict(tag=tag, version=tag[1:], source_sha=sha, workflow_sha=env["GITHUB_SHA"],
-                platform="linux/amd64", mode=mode, image=f"{IMAGE}:{tag[1:]}",
+                platform="linux/amd64", creation_eligible=creation_eligible, image=f"{IMAGE}:{tag[1:]}",
                 actor=env.get("GITHUB_ACTOR"), actor_id=env.get("GITHUB_ACTOR_ID"),
                 triggering_actor=env.get("GITHUB_TRIGGERING_ACTOR"),
                 run_attempt=env.get("GITHUB_RUN_ATTEMPT"),
-                bootstrap_confirmation=given or None,
                 run_url=f"{SOURCE}/actions/runs/{env['GITHUB_RUN_ID']}")
 
 
@@ -184,14 +171,15 @@ class Registry:
         finally:
             connection.close()
 
-    def lookup(self, version, bootstrap=False):
+    def lookup(self, version, allow_unavailable=False):
         status, package, link = self.get(PACKAGE)
-        if bootstrap:
-            require(status == 404 and isinstance(package, dict)
+        if status == 404 and allow_unavailable:
+            require(isinstance(package, dict)
                     and package.get("message") == "Not Found"
                     and isinstance(package.get("documentation_url"), str)
-                    and package["documentation_url"].startswith("https://docs.github.com/rest/"),
-                    "Bootstrap requires the exact package route's structured 404; visible packages stop")
+                    and package["documentation_url"].startswith("https://docs.github.com/rest/")
+                    and link is None,
+                    "Creation allowance requires the exact package route's structured 404 without pagination")
             return None, None
         require(status == 200, f"Package metadata HTTP {status}; no absence established")
         require(isinstance(package, dict) and type(package.get("id")) is int and package["id"] > 0
@@ -335,7 +323,7 @@ class Release:
         current = dispatch(os.environ)
         require(current == {k: self.state[k] for k in current}, "Dispatch identity changed")
         require(not self.state.get("push_attempted") and not self.state.get("digest"),
-                "This record already selected or attempted publication; use a fresh normal dispatch")
+                "This record already selected or attempted publication; use a fresh recovery dispatch")
         self.save(operation="source_and_tool_checks")
         source_version(self.source, self.state)
         resolve(self.workflow, self.state)
@@ -349,9 +337,9 @@ class Release:
         # Keep login in the job's disposable file store, never an auto-detected OS helper.
         write_json(Path(os.environ["DOCKER_CONFIG"]) / "config.json", {"auths": {"ghcr.io": {}}})
         run("docker", "login", "ghcr.io", "--username", os.environ["GITHUB_ACTOR"], "--password-stdin", input=token)
-        bootstrap = self.state["mode"] == "bootstrap"
-        package_id, digest = registry.lookup(self.state["version"], bootstrap)
-        self.save(package_id=package_id)
+        package_id, digest = registry.lookup(self.state["version"], self.state["creation_eligible"])
+        self.save(package_id=package_id,
+                  package_observation="unavailable" if package_id is None else "accessible")
         if digest:
             self.save(digest=digest, pinned_image=f"{IMAGE}@{digest}", reused=True, stage="digest_observed")
             output(new_image="false", digest=digest)
@@ -367,15 +355,16 @@ class Release:
         smoke(self.workflow, image_id)
         self.save(operation="prepush_recheck")
         remote_tag(self.workflow, self.state)
-        before_id, before_digest = registry.lookup(self.state["version"], bootstrap)
+        before_id, before_digest = registry.lookup(self.state["version"], package_id is None)
+        self.save(prepush_package_observation="unavailable" if before_id is None else "accessible")
         require(before_id == package_id and before_digest is None,
-                "Package identity changed or tag appeared; restart in normal mode")
+                "Package identity changed or tag appeared; restart through positive-access recovery")
         require(inspect_image(self.state["image"], self.state) == image_id, "Local image changed")
         # Persist BEFORE dispatch. Any error or termination after this point is uncertain.
         self.save(push_attempted=True, stage="push_attempted_outcome_uncertain", reused=False)
         pushed = run("docker", "push", self.state["image"])
         digests = re.findall(r"(?m)^\S+: digest: (sha256:[0-9a-f]{64}) size: [0-9]+\s*$", pushed)
-        require(len(digests) == 1, "Push digest not observed; normal investigation required")
+        require(len(digests) == 1, "Push digest not observed; positive-access investigation required")
         digest = digests[0]
         self.save(digest=digest, pinned_image=f"{IMAGE}@{digest}", stage="digest_observed")
         self.save(operation="postpush_registry_check")
@@ -420,9 +409,10 @@ class Release:
     def report(self):
         if os.environ.get("RELEASE_JOB_STATUS") != "success":
             self.save(validation="incomplete", next_action=(
-                "Normal-mode investigation only; never repeat bootstrap after any possible push"
+                "Positive-access investigation only; never reopen creation after any possible push"
                 if self.state.get("push_attempted") or self.state.get("digest") else
-                "Inspect failure; bootstrap requires proof of no prior push and fresh owner checks"))
+                "Inspect failure; recovery requires positive package access. If still absent, preserve proof "
+                "of no push and request a narrowly reviewed creation adjustment; ordinary reruns cannot create"))
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a") as stream:
