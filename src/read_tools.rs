@@ -25,16 +25,23 @@ use crate::tines::{
 #[derive(Clone)]
 pub struct ReadTools {
     tines: Option<TinesClient>,
+    limits: crate::tools::contract::LocalLimits,
 }
 
 impl ReadTools {
     pub fn new(tines: Option<TinesClient>) -> Self {
-        Self { tines }
+        Self::with_limits(tines, crate::tools::contract::LocalLimits::default())
     }
 
-    fn tool_definitions() -> Vec<Tool> {
-        let mut definitions =
-            crate::tools::definitions(&crate::tools::contract::LocalLimits::default());
+    pub fn with_limits(
+        tines: Option<TinesClient>,
+        limits: crate::tools::contract::LocalLimits,
+    ) -> Self {
+        Self { tines, limits }
+    }
+
+    fn tool_definitions(&self) -> Vec<Tool> {
+        let mut definitions = crate::tools::definitions(&self.limits);
         // The comment module owns its migration. Prefer its registered definition
         // when available so registration never creates a duplicate legacy tool.
         if !definitions
@@ -108,13 +115,11 @@ impl ServerHandler for ReadTools {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
-        std::future::ready(Ok(
-            ListToolsResult::with_all_items(Self::tool_definitions()),
-        ))
+        std::future::ready(Ok(ListToolsResult::with_all_items(self.tool_definitions())))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        Self::tool_definitions()
+        self.tool_definitions()
             .into_iter()
             .find(|tool| tool.name.as_ref() == name)
     }
@@ -124,7 +129,7 @@ impl ServerHandler for ReadTools {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
-        let limits = crate::tools::contract::LocalLimits::default();
+        let limits = self.limits;
         let registered = crate::tools::definitions(&limits)
             .into_iter()
             .find(|tool| tool.name == request.name);

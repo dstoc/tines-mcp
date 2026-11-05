@@ -52,8 +52,9 @@ pub fn router_with_client(
         .with_allowed_origins(config.allowed_origins.clone())
         .enforce_origin_validation()
         .with_cancellation_token(cancellation_token);
+    let limits = config.local_limits;
     let mcp = StreamableHttpService::new(
-        move || Ok(ReadTools::new(tines.clone())),
+        move || Ok(ReadTools::with_limits(tines.clone(), limits)),
         LocalSessionManager::default().into(),
         server_config,
     );
