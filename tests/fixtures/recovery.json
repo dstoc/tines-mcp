@@ -1,0 +1,314 @@
+{
+  "reference_revision": "af6cb25febf1b45d7eff32251f78fcf6355aed4a",
+  "sources": [
+    "apps/web/src/lib/server/api/issues.ts resumeIssue",
+    "apps/web/src/lib/server/api/runs.ts cancelRunForRequest and assertCancelable",
+    "apps/web/src/lib/server/api/permissions.ts requireAccess"
+  ],
+  "note": "Representative native response subsets. No-op and reset resume have the same post-operation shape. Native errors do not carry commitment evidence; adapter outcome remains unknown without an endpoint-specific regression proof. These fixtures do not verify HTTP dispatch or live authorization.",
+  "successes": [
+    {
+      "name": "resume_reset",
+      "tool": "resume_issue",
+      "arguments": {
+        "issue_id": "iss_target"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "iss_target",
+            "project_id": "prj_owner",
+            "number": 25,
+            "state": {
+              "id": "wfs_implement",
+              "name": "Implement"
+            },
+            "needs_attention": false,
+            "attempt_count": 0,
+            "decision_revision": 4,
+            "workflow_revision": 8,
+            "active_run": null,
+            "native_extension": {
+              "body": "$VAR `data`"
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "iss_target",
+        "project_id": "prj_owner",
+        "number": 25,
+        "decision_revision": 4,
+        "workflow_revision": 8,
+        "state": {
+          "id": "wfs_implement"
+        }
+      }
+    },
+    {
+      "name": "resume_no_op",
+      "tool": "resume_issue",
+      "arguments": {
+        "issue_id": "iss_target"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "iss_target",
+            "project_id": "prj_owner",
+            "number": 25,
+            "state": {
+              "id": "wfs_implement",
+              "name": "Implement"
+            },
+            "needs_attention": false,
+            "attempt_count": 0,
+            "decision_revision": 4,
+            "workflow_revision": 8,
+            "active_run": null,
+            "native_extension": {
+              "body": "$VAR `data`"
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "iss_target",
+        "project_id": "prj_owner",
+        "number": 25,
+        "decision_revision": 4,
+        "workflow_revision": 8,
+        "state": {
+          "id": "wfs_implement"
+        }
+      }
+    },
+    {
+      "name": "resume_shared_member",
+      "tool": "resume_issue",
+      "arguments": {
+        "issue_id": "iss_shared"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "iss_shared",
+            "project": {
+              "id": "prj_shared",
+              "name": "Shared"
+            },
+            "needs_attention": false,
+            "attempt_count": 0,
+            "my_choice": null,
+            "redacted": [
+              "workspace"
+            ]
+          }
+        }
+      },
+      "receipt": {
+        "id": "iss_shared",
+        "project": {
+          "id": "prj_shared"
+        }
+      }
+    },
+    {
+      "name": "cancel_running",
+      "tool": "cancel_run",
+      "arguments": {
+        "run_id": "arun_target"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "arun_target",
+            "issue_id": "iss_target",
+            "status": "running",
+            "outcome": null,
+            "ended_at": null,
+            "log": "native log",
+            "native_extension": {
+              "preserve": true
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "arun_target",
+        "issue_id": "iss_target",
+        "status": "running",
+        "outcome": null,
+        "ended_at": null
+      }
+    },
+    {
+      "name": "cancel_launching",
+      "tool": "cancel_run",
+      "arguments": {
+        "run_id": "arun_target"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "arun_target",
+            "issue_id": "iss_target",
+            "status": "launching",
+            "outcome": null,
+            "ended_at": null,
+            "log": "native log",
+            "native_extension": {
+              "preserve": true
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "arun_target",
+        "issue_id": "iss_target",
+        "status": "launching",
+        "outcome": null,
+        "ended_at": null
+      }
+    },
+    {
+      "name": "cancel_canceled",
+      "tool": "cancel_run",
+      "arguments": {
+        "run_id": "arun_target"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "arun_target",
+            "issue_id": "iss_target",
+            "status": "canceled",
+            "outcome": null,
+            "ended_at": 100,
+            "log": "native log",
+            "native_extension": {
+              "preserve": true
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "arun_target",
+        "issue_id": "iss_target",
+        "status": "canceled",
+        "outcome": null,
+        "ended_at": 100
+      }
+    },
+    {
+      "name": "cancel_completed",
+      "tool": "cancel_run",
+      "arguments": {
+        "run_id": "arun_target"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "arun_target",
+            "issue_id": "iss_target",
+            "status": "completed",
+            "outcome": "advanced",
+            "ended_at": 101,
+            "log": "native log",
+            "native_extension": {
+              "preserve": true
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "arun_target",
+        "issue_id": "iss_target",
+        "status": "completed",
+        "outcome": "advanced",
+        "ended_at": 101
+      }
+    }
+  ],
+  "errors": [
+    {
+      "tool": "resume_issue",
+      "status": 403,
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue.resume",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "resume_issue",
+      "status": 403,
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue.resume",
+          "domain": "control_plane",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "cancel_run",
+      "status": 403,
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "run.cancel",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "cancel_run",
+      "status": 403,
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "run.cancel",
+          "domain": "control_plane",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "cancel_run",
+      "status": 422,
+      "expected_outcome": "unknown",
+      "error": {
+        "code": "run_already_ended",
+        "message": "This run has already ended; nothing to cancel"
+      }
+    }
+  ]
+}
