@@ -187,13 +187,13 @@ async fn append_with_version(app: Router, args: Value, version: &str) -> Value {
 fn assert_outcome(body: &Value, outcome: &str) {
     assert_eq!(body["result"]["isError"], true, "{body}");
     assert_eq!(
-        body["result"]["structuredContent"]["error"]["details"]["write_outcome"], outcome,
+        body["result"]["structuredContent"]["meta"]["write"]["outcome"], outcome,
         "{body}"
     );
 }
 
 #[tokio::test]
-async fn native_receipt_and_links_preserve_body_and_repeated_calls_send_one_post_each() {
+async fn native_receipt_preserves_body_and_repeated_calls_send_one_post_each() {
     let upstream = upstream().await;
     let app = app(&upstream.url);
     let body = "  **Findings**\n\"quotes\" \\ path 🦀\n\u{85}  ";
@@ -212,24 +212,21 @@ async fn native_receipt_and_links_preserve_body_and_repeated_calls_send_one_post
         );
         assert_eq!(data["id"], "cmt-a");
         let links = &result["result"]["structuredContent"]["meta"]["links"];
+        assert_eq!(links, &json!([]));
         assert_eq!(
-            links[0]["href"],
-            format!("{}/issues/prj-a/12", upstream.url)
+            result["result"]["structuredContent"]["meta"]["write"],
+            json!({"outcome":"confirmed","receipt":{
+                "id":"cmt-a","issue_id":"iss-a","created_at":12345
+            }})
         );
     }
     let requests = upstream.state.requests.lock().unwrap();
-    assert_eq!(requests.len(), 4);
-    for pair in requests.as_chunks::<2>().0 {
-        assert_eq!(
-            (pair[0].method.clone(), pair[0].path.as_str()),
-            (Method::GET, "/api/v1/issues/iss-a")
-        );
-        assert_eq!(
-            (pair[1].method.clone(), pair[1].path.as_str()),
-            (Method::POST, "/api/v1/issues/iss-a/comments")
-        );
-        assert_eq!(pair[1].authorization, "Bearer test-write-token");
-        assert_eq!(pair[1].body, json!({"body":body}));
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.method, Method::POST);
+        assert_eq!(request.path, "/api/v1/issues/iss-a/comments");
+        assert_eq!(request.authorization, "Bearer test-write-token");
+        assert_eq!(request.body, json!({"body":body}));
     }
 }
 
@@ -248,7 +245,11 @@ async fn strict_arguments_and_semantic_validation_never_send_a_request() {
         json!({"issue_id":"iss-a","body":"text","author":"other"}),
     ] {
         let result = append(app.clone(), args).await;
-        assert_eq!(result["error"]["code"], -32602, "{result}");
+        assert_outcome(&result, "not_attempted");
+        assert_eq!(
+            result["result"]["structuredContent"]["error"]["code"],
+            "invalid_input"
+        );
     }
     for issue_id in ["", "  ", ".", ".."] {
         let result = append(app.clone(), json!({"issue_id":issue_id,"body":"text"})).await;
@@ -281,89 +282,53 @@ async fn default_transport_request_cap_rejects_before_comment_validation_or_disp
 }
 
 #[tokio::test]
-async fn invalid_issue_identity_and_parent_api_failures_prevent_post() {
+async fn parent_metadata_and_failures_are_not_fetched_before_post() {
     for issue in [
-        json!({}),
-        json!({"id":"other","project_id":"prj-a","number":12}),
+        Reply {
+            status: StatusCode::OK,
+            body: json!({}).to_string(),
+        },
+        Reply {
+            status: StatusCode::OK,
+            body: json!({"id":"other"}).to_string(),
+        },
+        Reply {
+            status: StatusCode::OK,
+            body: json!({"id":"iss-a","project_id":"prj-owner","number":12}).to_string(),
+        },
+        Reply {
+            status: StatusCode::OK,
+            body: json!({"id":"iss-a","project":{"id":"prj-shared"},"number":12}).to_string(),
+        },
+        Reply {
+            status: StatusCode::UNAUTHORIZED,
+            body: "parent refused".into(),
+        },
+        Reply {
+            status: StatusCode::FORBIDDEN,
+            body: "parent refused".into(),
+        },
+        Reply {
+            status: StatusCode::NOT_FOUND,
+            body: "parent refused".into(),
+        },
     ] {
         let upstream = upstream().await;
-        upstream.state.issue.lock().unwrap().body = issue.to_string();
-        let result = append(
-            app(&upstream.url),
-            json!({"issue_id":"iss-a","body":"text"}),
-        )
-        .await;
-        assert_outcome(&result, "not_attempted");
-        assert_eq!(
-            result["result"]["structuredContent"]["error"]["status"],
-            200
-        );
-        let requests = upstream.state.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, Method::GET);
-    }
-    for status in [401, 403, 404] {
-        let upstream = upstream().await;
-        *upstream.state.issue.lock().unwrap() = Reply {
-            status: StatusCode::from_u16(status).unwrap(),
-            body: json!({"error":{"code":"parent_refused","message":"API refused"}}).to_string(),
-        };
-        let result = append(
-            app(&upstream.url),
-            json!({"issue_id":"iss-a","body":"text"}),
-        )
-        .await;
-        assert_outcome(&result, "not_attempted");
-        let error = &result["result"]["structuredContent"]["error"];
-        assert_eq!(error["status"], status);
-        assert_eq!(error["code"], "parent_refused");
-        let requests = upstream.state.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, Method::GET);
-    }
-}
-
-#[tokio::test]
-async fn token_visible_issues_append_with_optional_link_metadata() {
-    let upstream = upstream().await;
-    for (issue, project_id) in [
-        (json!({"id":"iss-a"}), None),
-        (json!({"id":"iss-a","number":12}), None),
-        (
-            json!({"id":"iss-a","project_id":"prj-owner","number":12}),
-            Some("prj-owner"),
-        ),
-        (
-            json!({"id":"iss-a","project":{"id":"prj-shared","name":"Shared"},"number":12}),
-            Some("prj-shared"),
-        ),
-    ] {
-        upstream.state.issue.lock().unwrap().body = issue.to_string();
-        upstream.state.requests.lock().unwrap().clear();
+        *upstream.state.issue.lock().unwrap() = issue;
         let result = append(
             app(&upstream.url),
             json!({"issue_id":"iss-a","body":"text"}),
         )
         .await;
         assert_eq!(result["result"]["isError"], false, "{result}");
-        let links = &result["result"]["structuredContent"]["meta"]["links"];
-        if let Some(project_id) = project_id {
-            assert_eq!(
-                links[0]["href"],
-                format!("{}/issues/{project_id}/12", upstream.url)
-            );
-        } else {
-            assert!(
-                links.is_null() || links.as_array().is_some_and(Vec::is_empty),
-                "{result}"
-            );
-        }
+        assert_eq!(
+            result["result"]["structuredContent"]["meta"]["links"],
+            json!([])
+        );
         let requests = upstream.state.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].method, Method::GET);
-        assert_eq!(requests[1].method, Method::POST);
-        assert_eq!(requests[1].path, "/api/v1/issues/iss-a/comments");
-        assert_eq!(requests[1].authorization, "Bearer test-write-token");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::POST);
+        assert_eq!(requests[0].path, "/api/v1/issues/iss-a/comments");
     }
 }
 
@@ -380,23 +345,48 @@ async fn native_rejections_and_ambiguous_server_failures_keep_status_and_never_r
         .await;
         assert_eq!(result["result"]["isError"], true);
         let error = &result["result"]["structuredContent"]["error"];
-        assert_eq!(error["status"], status);
+        assert_eq!(
+            result["result"]["structuredContent"]["meta"]["http_status"],
+            status
+        );
         assert_eq!(error["code"], "native_failure");
         assert_eq!(error["details"]["field"], "body");
-        assert_eq!(error["retry_after"], "7");
-        if status >= 500 || status == 408 {
-            assert_outcome(&result, "unknown");
-            assert!(
-                error["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Inspect the issue")
-            );
-        } else {
-            assert!(error["details"].get("write_outcome").is_none());
-        }
+        assert_eq!(
+            result["result"]["structuredContent"]["meta"]["retry_after"],
+            "7"
+        );
+        // HTTP status alone cannot prove that a native mutation did not commit.
+        assert_outcome(&result, "unknown");
         assert!(!result.to_string().contains("private comment"));
-        assert_eq!(upstream.state.requests.lock().unwrap().len(), 2);
+        assert_eq!(upstream.state.requests.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn native_commitment_evidence_is_preserved_without_another_request() {
+    for (committed, outcome) in [(false, "rejected"), (true, "confirmed")] {
+        let upstream = upstream().await;
+        *upstream.state.comment.lock().unwrap() = Reply {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: json!({"error":{
+                "code":"native_failure", "message":"API failed",
+                "details":{"committed":committed}
+            }})
+            .to_string(),
+        };
+        let result = append(
+            app(&upstream.url),
+            json!({"issue_id":"iss-a","body":"text"}),
+        )
+        .await;
+        assert_outcome(&result, outcome);
+        let content = &result["result"]["structuredContent"];
+        assert_eq!(content["meta"]["http_status"], 500);
+        assert_eq!(content["meta"]["write"]["committed"], committed);
+        assert_eq!(content["error"]["details"]["committed"], committed);
+        let requests = upstream.state.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::POST);
     }
 }
 
@@ -424,16 +414,16 @@ async fn invalid_success_and_redirect_responses_report_unknown_without_retrying(
         .await;
         assert_outcome(&result, "unknown");
         assert_eq!(
-            result["result"]["structuredContent"]["error"]["status"],
+            result["result"]["structuredContent"]["meta"]["http_status"],
             status
         );
-        assert_eq!(upstream.state.requests.lock().unwrap().len(), 2);
+        assert_eq!(upstream.state.requests.lock().unwrap().len(), 1);
         assert!(!result.to_string().contains("private text"));
     }
 }
 
 #[tokio::test]
-async fn oversized_success_result_keeps_created_receipt_even_when_link_context_is_oversized() {
+async fn oversized_success_result_keeps_confirmed_receipt_and_reports_omissions() {
     for oversized_link in [false, true] {
         let upstream = upstream().await;
         let comment = json!({"id":"cmt-a","issue_id":"iss-a","body":"\"\\".repeat(100 * 1024)});
@@ -446,12 +436,15 @@ async fn oversized_success_result_keeps_created_receipt_even_when_link_context_i
             json!({"issue_id":"iss-a","body":"text"}),
         )
         .await;
-        assert_outcome(&result, "created");
-        let error = &result["result"]["structuredContent"]["error"];
-        assert_eq!(error["code"], "tool_result_too_large");
-        assert_eq!(error["details"]["comment_id"], "cmt-a");
+        assert_eq!(result["result"]["isError"], false);
+        let content = &result["result"]["structuredContent"];
+        assert!(content.get("error").is_none());
+        assert_eq!(content["data"], Value::Null);
+        assert_eq!(content["meta"]["write"]["outcome"], "confirmed");
+        assert_eq!(content["meta"]["write"]["receipt"]["id"], "cmt-a");
+        assert!(!content["meta"]["omissions"].as_array().unwrap().is_empty());
         assert!(serde_json::to_vec(&result["result"]).unwrap().len() <= 512 * 1024);
-        assert_eq!(upstream.state.requests.lock().unwrap().len(), 2);
+        assert_eq!(upstream.state.requests.lock().unwrap().len(), 1);
     }
 }
 
@@ -551,7 +544,10 @@ async fn lost_response_and_truncated_body_report_unknown_and_do_not_resend() {
         });
         let result = append(app(&url), json!({"issue_id":"iss-a","body":"text"})).await;
         assert_outcome(&result, "unknown");
-        assert!(!rx.recv().await.unwrap());
+        assert_eq!(
+            result["result"]["structuredContent"]["meta"]["http_status"],
+            if truncated { json!(201) } else { Value::Null }
+        );
         assert!(rx.recv().await.unwrap());
         assert!(timeout(Duration::from_millis(50), rx.recv()).await.is_err());
         task.abort();
@@ -572,12 +568,12 @@ async fn immutable_issue_id_is_encoded_as_one_route_segment() {
     .await;
     assert_eq!(result["result"]["isError"], false);
     let requests = upstream.state.requests.lock().unwrap();
-    assert_eq!(requests[0].path, "/api/v1/issues/iss%2Fa%3F%23%25");
-    assert_eq!(requests[1].path, "/api/v1/issues/iss%2Fa%3F%23%25/comments");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/api/v1/issues/iss%2Fa%3F%23%25/comments");
 }
 
 #[tokio::test]
-async fn an_untrusted_oversized_receipt_id_cannot_overflow_the_error_result() {
+async fn an_untrusted_oversized_receipt_id_cannot_overflow_the_confirmed_result() {
     let upstream = upstream().await;
     upstream.state.comment.lock().unwrap().body =
         json!({"id":"x".repeat(512 * 1024),"issue_id":"iss-a"}).to_string();
@@ -586,12 +582,16 @@ async fn an_untrusted_oversized_receipt_id_cannot_overflow_the_error_result() {
         json!({"issue_id":"iss-a","body":"text"}),
     )
     .await;
-    assert_outcome(&result, "created");
+    assert_eq!(result["result"]["isError"], false);
+    assert_eq!(
+        result["result"]["structuredContent"]["meta"]["write"]["outcome"],
+        "confirmed"
+    );
     assert!(serde_json::to_vec(&result["result"]).unwrap().len() <= 512 * 1024);
     assert!(
-        result["result"]["structuredContent"]["error"]["details"]
-            .get("comment_id")
+        result["result"]["structuredContent"]["meta"]["write"]["receipt"]
+            .get("id")
             .is_none()
     );
-    assert_eq!(upstream.state.requests.lock().unwrap().len(), 2);
+    assert_eq!(upstream.state.requests.lock().unwrap().len(), 1);
 }

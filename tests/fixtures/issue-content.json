@@ -1,0 +1,360 @@
+{
+  "reference_revision": "af6cb25febf1b45d7eff32251f78fcf6355aed4a",
+  "native_sources": [
+    "apps/web/src/lib/server/api/issues.ts:createIssue, updateIssue, createComment",
+    "apps/web/src/lib/server/api/core.ts:requireString, optionalString",
+    "apps/web/src/routes/api/v1/projects/[id]/issues/+server.ts",
+    "apps/web/src/routes/api/v1/issues/[id]/+server.ts",
+    "apps/web/src/routes/api/v1/issues/[id]/comments/+server.ts"
+  ],
+  "requests": [
+    {
+      "tool": "create_issue",
+      "arguments": {
+        "project_id": "prj_owner",
+        "title": "  literal $VAR `text` 🦀\n",
+        "description": "  literal $VAR `text` 🦀\n",
+        "workflow_id": "wf_native",
+        "state": "Backlog",
+        "label_ids": [
+          "lbl_0123456789abcdef"
+        ],
+        "blocked_by": [
+          "iss_prerequisite"
+        ],
+        "blocks": [
+          "iss_successor"
+        ],
+        "expected_sharing_revision": 3
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/projects/{project_id}/issues",
+        "segments": [
+          "projects",
+          "prj_owner",
+          "issues"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "title": "  literal $VAR `text` 🦀\n",
+            "description": "  literal $VAR `text` 🦀\n",
+            "workflow_id": "wf_native",
+            "state": "Backlog",
+            "labels": [
+              "lbl_0123456789abcdef"
+            ],
+            "blocked_by": [
+              "iss_prerequisite"
+            ],
+            "blocks": [
+              "iss_successor"
+            ],
+            "expected_sharing_revision": 3
+          }
+        }
+      }
+    },
+    {
+      "tool": "edit_issue",
+      "arguments": {
+        "issue_id": "id/with?reserved#&% ü",
+        "description": "  literal $VAR `text` 🦀\n"
+      },
+      "plan": {
+        "method": "PATCH",
+        "template": "/issues/{issue_id}",
+        "segments": [
+          "issues",
+          "id/with?reserved#&% ü"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "description": "  literal $VAR `text` 🦀\n"
+          }
+        }
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "arguments": {
+        "issue_id": "iss_requested",
+        "body": "  literal $VAR `text` 🦀\n"
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/issues/{issue_id}/comments",
+        "segments": [
+          "issues",
+          "iss_requested",
+          "comments"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "body": "  literal $VAR `text` 🦀\n"
+          }
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "tool": "create_issue",
+      "arguments": {
+        "project_id": "prj_owner",
+        "title": "Title"
+      },
+      "status": 201,
+      "native": {
+        "id": "iss_created",
+        "project_id": "prj_owner",
+        "number": 18,
+        "state": {
+          "id": "wfs_backlog",
+          "category": "backlog"
+        },
+        "decision_revision": 1,
+        "workflow_revision": 4,
+        "active_run": null,
+        "description": "  literal $VAR `text` 🦀\n",
+        "permission_receipt": {
+          "my_agents": null
+        },
+        "native_extension": {
+          "x": [
+            1,
+            null
+          ]
+        }
+      },
+      "receipt": {
+        "id": "iss_created",
+        "project_id": "prj_owner",
+        "number": 18,
+        "state": {
+          "id": "wfs_backlog"
+        },
+        "decision_revision": 1,
+        "workflow_revision": 4
+      }
+    },
+    {
+      "tool": "create_issue",
+      "arguments": {
+        "project_id": "prj_owner",
+        "title": "Title"
+      },
+      "status": 201,
+      "native": {
+        "id": "iss_member",
+        "project": {
+          "id": "prj_owner",
+          "name": "Shared"
+        },
+        "number": 19,
+        "state": {
+          "id": "wfs_active",
+          "category": "active"
+        },
+        "my_choice": null,
+        "redacted": [
+          "workspace"
+        ]
+      },
+      "receipt": {
+        "id": "iss_member",
+        "project": {
+          "id": "prj_owner"
+        },
+        "number": 19,
+        "state": {
+          "id": "wfs_active"
+        }
+      }
+    },
+    {
+      "tool": "create_issue",
+      "arguments": {
+        "project_id": "prj_owner",
+        "title": "Title"
+      },
+      "status": 201,
+      "native": {
+        "id": "iss_created"
+      },
+      "receipt": {
+        "id": "iss_created"
+      }
+    },
+    {
+      "tool": "edit_issue",
+      "arguments": {
+        "issue_id": "iss_requested",
+        "description": ""
+      },
+      "status": 200,
+      "native": {
+        "id": "iss_requested",
+        "description": "",
+        "decision_revision": 7,
+        "workflow_revision": 4,
+        "active_run": {
+          "id": "arun_native",
+          "status": "running"
+        }
+      },
+      "receipt": {
+        "id": "iss_requested",
+        "decision_revision": 7,
+        "workflow_revision": 4
+      }
+    },
+    {
+      "tool": "edit_issue",
+      "arguments": {
+        "issue_id": "iss_requested",
+        "description": ""
+      },
+      "status": 200,
+      "native": {
+        "id": "iss_requested",
+        "project": {
+          "id": "prj_moved"
+        },
+        "my_choice": null
+      },
+      "receipt": {
+        "id": "iss_requested",
+        "project": {
+          "id": "prj_moved"
+        }
+      }
+    },
+    {
+      "tool": "edit_issue",
+      "arguments": {
+        "issue_id": "iss_requested",
+        "description": ""
+      },
+      "status": 200,
+      "native": {
+        "id": "iss_requested"
+      },
+      "receipt": {
+        "id": "iss_requested"
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "arguments": {
+        "issue_id": "iss_requested",
+        "body": "Body"
+      },
+      "status": 201,
+      "native": {
+        "id": "cmt_new",
+        "issue_id": "iss_requested",
+        "body": "  literal $VAR `text` 🦀\n",
+        "created_at": 1793847550283,
+        "actor": {
+          "user_name": "Native",
+          "run": null
+        },
+        "edited_at": null
+      },
+      "receipt": {
+        "id": "cmt_new",
+        "issue_id": "iss_requested",
+        "created_at": 1793847550283
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "arguments": {
+        "issue_id": "iss_requested",
+        "body": "Body"
+      },
+      "status": 201,
+      "native": {
+        "id": "cmt_new",
+        "issue_id": "iss_requested"
+      },
+      "receipt": {
+        "id": "cmt_new",
+        "issue_id": "iss_requested"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "tool": "create_issue",
+      "status": 409,
+      "native_source": "apps/web/src/lib/server/api/issues.ts:createIssue",
+      "error": {
+        "code": "conflict",
+        "message": "Project sharing changed; refresh before creating the issue",
+        "details": {
+          "committed": false,
+          "current_sharing_revision": 4
+        }
+      }
+    },
+    {
+      "tool": "create_issue",
+      "status": 403,
+      "native_source": "apps/web/src/lib/server/api/permissions.ts:requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue.create",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "edit_issue",
+      "status": 403,
+      "native_source": "apps/web/src/lib/server/api/permissions.ts:requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "issue.update",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "status": 403,
+      "native_source": "apps/web/src/lib/server/api/permissions.ts:requireAccess",
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "comment.create",
+          "domain": "project",
+          "access": "write"
+        }
+      }
+    },
+    {
+      "tool": "append_issue_comment",
+      "status": 500,
+      "native_source": "apps/web/src/lib/server/api/issues.ts:createComment post-insert loadComments",
+      "error": {
+        "code": "internal",
+        "message": "Comment insert failed"
+      }
+    }
+  ]
+}
