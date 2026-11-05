@@ -15,29 +15,34 @@ liveness and clean shutdown; it does not establish live Tines permissions or
 intended-client tunnel access. See the selected source commit's README for tools.
 This guide describes the workflow, not evidence of a completed publication.
 
-## Preserved legacy release and first-package authority
+## Preserved v0.1.1 incident and next patch
 
-[Release PR #34](https://github.com/dstoc/tines-mcp/pull/34) merged on November 5,
-2026 at `8853ca2e0af4ae78487443b3c6f0d9054c51ed66`. Read-only inspection found
-`v0.1.1` already published, mutable, and without release assets. Its image job
-failed before either attestation. A published source release does not establish
-image acceptance. Preserve that release, source and tag. This workflow rejects
-its missing durable evidence before image work; it cannot backfill or redraft it.
-Use a separately reviewed future patch release after the draft-first and
-registry-diagnostics changes are reviewed. Do not retry v0.1.1 publication.
+PR #34 used the historical `Release-As: 0.1.1` footer and is already merged.
+Do not repeat that preparation or add a persistent version override.
 
-The former `0.1.0` bootstrap prerequisite is superseded. No bootstrap dispatch,
-dummy package, or `v0.1.0` publication is required. The `bootstrap-sha` (`2e2af44`)
-seeds changelog history only. The preparatory commit's `Release-As: 0.1.1` body
-footer requested PR #34; do not add a persistent `release-as` override.
+The published GitHub release v0.1.1 (ID `434971264`) and tag remain at source
+`8853ca2e0af4ae78487443b3c6f0d9054c51ed66`. Its image publication stopped at
+`registry_authority`. The inherited run record for `41999036676`, attempt 1,
+reports `stage=no_push_attempted`, `push_attempted=false`, and
+`validation=incomplete`. Preserve artifact `adapter-release-41999036676-1`,
+ID `13401955987`, archive SHA-256
+`d792be91cf22bd4b53d6ae1ffbf3330b6349d32d5381224ade6f5ed4bd4b6775`.
+The archive hash is inherited evidence; this implementation did not download
+and independently verify that archive.
 
-The original first-package safeguards remain in code. They do not grant a new
-first-package attempt for a later version or authorize another v0.1.1 attempt.
-If the package is still absent, a future version needs a separately reviewed
-creation decision. tines-mcp/39 owns the related authority diagnostics; this
-change adds no legacy exception. The original owner prerequisites were:
+The raw rejected response was not retained. Its failed predicate and authority
+outcome remain unknown. This no-push record does not establish namespace absence.
+Do not recover, backfill, delete, redraft, amend, or move this release or tag.
+Douglas selected a new patch after diagnostics and draft-first changes pass
+independent review. No release PR, version bump, publication, or owner action is
+authorized by this implementation.
 
-Before the first release PR merge, the owner had to:
+The only unavailable-package eligibility pin is now `v0.1.2`/`0.1.2`. This is a
+bounded code policy, not release authorization. Manual dispatch, later attempts,
+v0.1.1, and all other versions gain no creation allowance. Historical proposal
+approvals and the 0.1.0 manifest seed do not authorize a new publication.
+
+Before separately authorizing the next patch release PR merge, the owner must:
 
 1. Verify the exact `dstoc/tines-mcp` container package is absent in an
    authoritative owner view. An inaccessible view or empty access-filtered
@@ -55,7 +60,7 @@ require no credential change. If the owner cannot establish them, do not release
 Proposal and implementation reviews do not establish these operational facts.
 
 The helper derives creation eligibility only for a successful `main` push
-handoff with `release_created=true`, `draft=true`, a positive release ID, exact tag/version `v0.1.1`/`0.1.1`, and
+handoff with `release_created=true`, `draft=true`, a positive release ID, exact tag/version `v0.1.2`/`0.1.2`, and
 `GITHUB_RUN_ATTEMPT=1`. It independently verifies the source tag, ancestry, Cargo
 manifest, lockfile, and release outputs. Callers cannot select a creation mode.
 Manual dispatches, attempts after 1, and all other versions require positive
@@ -216,6 +221,23 @@ require `adapter-release-<run-id>-<attempt>` upload before publication; all atte
 try `adapter-release-diagnostics-<run-id>-<attempt>` after reporting. The release
 asset retains successful acceptance independently of Actions expiration. An
 interrupted run may fail to upload evidence; treat missing evidence as uncertain.
+
+`package_responses` retains the latest fixed diagnostic snapshot per metadata
+purpose: initial authority, pre-push, post-push, acceptance, and finalization.
+Each snapshot records only status, bounded observed byte count, strict-parser classification,
+JSON type, Link presence (including empty versus absent), and boolean results
+for the structured-404 predicate. Fields whose observations are unavailable
+remain null. The snapshot never retains raw response bodies, headers, messages, documentation URLs,
+exception text, or response-string hashes. Version pages do not add snapshots.
+The synchronous atomic save finishes before further work; a save failure stops
+the operation and does not reopen creation or clear a recorded push boundary.
+Snapshots remain in Actions diagnostic evidence, separate from the allowlisted
+durable acceptance asset.
+
+A failed predicate is evidence of rejection, not proof of absence or denied
+access. Review the flags before proposing any endpoint-specific predicate change.
+An empty Link header continues to fail. A later eligible 404 does not resolve the
+v0.1.1 incident. Missing diagnostic/upload evidence remains unknown.
 
 The main stages are:
 

@@ -11,7 +11,7 @@ from test_release import (r, environment, visible, version, verified,
 
 
 def release_row(**changes):
-    row = dict(id=41, tag_name="v0.1.1", target_commitish=SOURCE_SHA, prerelease=False,
+    row = dict(id=41, tag_name="v0.1.2", target_commitish=SOURCE_SHA, prerelease=False,
                draft=True, immutable=False, published_at=None)
     return dict(row, **changes)
 
@@ -74,14 +74,14 @@ class DraftTests(unittest.TestCase):
         return 200, json.dumps(value).encode(), None, None
 
     def accepted(self, reuse=True):
-        self.replies = visible([version(tags=["0.1.1"])]) if reuse else (
-            visible() + visible() + visible([version(tags=["0.1.1"])]))
+        self.replies = visible([version(tags=["0.1.2"])]) if reuse else (
+            visible() + visible() + visible([version(tags=["0.1.2"])]))
         self.release.publish()
-        self.replies += visible([version(tags=["0.1.1"])])
+        self.replies += visible([version(tags=["0.1.2"])])
         self.release.accept()
 
     def final(self):
-        self.replies += visible([version(tags=["0.1.1"])])
+        self.replies += visible([version(tags=["0.1.2"])])
         self.release.finalize()
 
     def fresh(self):
@@ -107,6 +107,61 @@ class DraftTests(unittest.TestCase):
         # Stored bytes describe acceptance, never a claim of publication.
         self.assertNotIn("publication", r.read_json(self.assets[0][1]))
         self.assertEqual(r.read_json(self.assets[0][1])["snapshot"]["run_id"], "123")
+
+    def test_real_metadata_diagnostics_stay_outside_durable_acceptance_asset(self):
+        from test_package_responses import assert_safe_snapshot, MARKER
+        self.patch_http.stop()
+        body = json.dumps(dict(baseline.package(), message=MARKER, documentation_url=MARKER,
+                               extra=MARKER)).encode()
+        rows = json.dumps([version(tags=["0.1.2"])]).encode()
+        with patch.object(r.http.client, "HTTPSConnection") as conn:
+            response = conn.return_value.getresponse.return_value
+            response.status, response.getheader.return_value = 200, None
+            response.read.side_effect = [body, rows] * 3
+            self.release.publish()
+            self.release.accept()
+            self.assertEqual(set(self.release.state["package_responses"]), {"initial_authority", "acceptance"})
+            self.release.retain()
+            durable = self.assets[0][1]
+            self.assertNotIn("package_responses", r.read_json(durable)["snapshot"])
+            self.assertNotIn(b"json_result", durable)
+            self.release.finalize()
+            self.assertEqual(set(self.release.state["package_responses"]),
+                             {"initial_authority", "acceptance", "finalization"})
+            for value in self.release.state["package_responses"].values():
+                assert_safe_snapshot(self, value)
+            self.assertEqual(conn.return_value.request.call_count, 6)
+            for path in self.release.record.parent.iterdir():
+                if path.is_file():
+                    self.assertNotIn(MARKER.encode(), path.read_bytes())
+            self.assertEqual(self.assets[0][1], durable)
+            self.assertEqual(self.release.state["publication"], "published")
+            self.assertEqual(self.pushes(), [])
+
+    def test_failed_final_metadata_save_cannot_dispatch_publication(self):
+        self.accepted()
+        self.release.retain()
+        before = r.read_json(self.release.record.read_bytes())
+        self.patch_http.stop()
+        original_write = r.write_json
+
+        def fail_snapshot(path, value):
+            if path == self.release.record and "finalization" in value.get("package_responses", {}):
+                raise OSError("SECRET_RESPONSE_MARKER")
+            original_write(path, value)
+
+        with patch.object(r.http.client, "HTTPSConnection") as conn, patch.object(r, "write_json", side_effect=fail_snapshot):
+            response = conn.return_value.getresponse.return_value
+            response.status, response.getheader.return_value = 200, None
+            response.read.return_value = json.dumps(baseline.package()).encode()
+            with self.assertRaises(OSError):
+                self.release.finalize()
+        self.assertEqual(r.read_json(self.release.record.read_bytes()), before)
+        self.assertEqual(self.release.state["digest"], DIGEST)
+        self.assertNotIn("publication_attempted", self.release.state)
+        self.assertEqual([method for method, _ in self.mutations()], ["POST"])
+        self.assertTrue(self.row["draft"])
+        self.assertEqual(self.pushes(), [])
 
     def test_valid_asset_from_older_acceptance_is_reused_without_rewriting(self):
         self.signer = OLD_WORKFLOW
@@ -160,13 +215,19 @@ class DraftTests(unittest.TestCase):
                 self.assertEqual(self.pushes(), [])
 
     def test_published_legacy_has_zero_image_or_release_writes(self):
-        for immutable in (False, True):
-            self.row.update(draft=False, immutable=immutable, published_at="2026-11-05")
-            self.commands.clear()
-            with self.assertRaisesRegex(r.ReleaseError, "legacy"):
-                self.fresh()
-            self.assertEqual(self.mutations(), [])
-            self.assertFalse(any(c[0] == "docker" for c, *_ in self.commands))
+        for tag in ("v0.1.1", "v0.1.2"):
+            for immutable in (False, True):
+                with self.subTest(tag=tag, immutable=immutable):
+                    os.environ["RELEASE_TAG"] = tag
+                    self.remote_tag_name = tag
+                    self.row.update(tag_name=tag, draft=False, immutable=immutable, published_at="2026-11-05")
+                    self.commands.clear()
+                    with self.assertRaisesRegex(r.ReleaseError, "legacy"):
+                        self.fresh()
+                    self.assertEqual(self.mutations(), [])
+                    self.assertEqual(self.paths, [])
+                    self.assertFalse(any(c[0] == "docker" for c, *_ in self.commands))
+
 
     def test_missing_image_cannot_build_for_published_or_retained_evidence(self):
         self.accepted()
@@ -283,7 +344,7 @@ class DraftTests(unittest.TestCase):
             with self.subTest(rows=rows), patch.object(r.Releases, "listing", return_value=rows), self.assertRaises(r.ReleaseError):
                 self.release.resolve()
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true", RELEASE_DRAFT="true",
-                          RELEASE_ID="42", RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success")
+                          RELEASE_ID="42", RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success")
         with self.assertRaises(r.ReleaseError):
             self.release.resolve()
         self.assertEqual(self.pushes(), [])

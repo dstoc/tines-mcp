@@ -24,7 +24,7 @@ DIGEST, OTHER = "sha256:" + "1" * 64, "sha256:" + "2" * 64
 def environment(**overrides):
     result = dict(GITHUB_REPOSITORY=r.REPO, GITHUB_EVENT_NAME="workflow_dispatch",
                   GITHUB_REF="refs/heads/main", GITHUB_SHA=WORKFLOW_SHA,
-                  RELEASE_TAG="v0.1.1", RELEASE_SOURCE=SOURCE_SHA, GITHUB_ACTOR="dstoc", GITHUB_ACTOR_ID="539597",
+                  RELEASE_TAG="v0.1.2", RELEASE_SOURCE=SOURCE_SHA, GITHUB_ACTOR="dstoc", GITHUB_ACTOR_ID="539597",
                   GITHUB_TRIGGERING_ACTOR="dstoc", GITHUB_RUN_ATTEMPT="1", GITHUB_RUN_ID="123",
                   GH_TOKEN="test-only-token", RELEASE_ID="41", RELEASE_DRAFT="true")
     result.update(overrides)
@@ -70,11 +70,11 @@ def verified(state, predicate_type=r.PREDICATE, signer=WORKFLOW_SHA):
 class DispatchTests(unittest.TestCase):
     def test_manual_dispatch_requires_positive_access(self):
         state = r.dispatch(environment())
-        self.assertEqual(state["version"], "0.1.1")
+        self.assertEqual(state["version"], "0.1.2")
         self.assertFalse(state["creation_eligible"])
 
     def test_dispatch_gates(self):
-        for field, value in [("GITHUB_REPOSITORY", "other/tines-mcp"), ("GITHUB_REF", "refs/tags/v0.1.1"),
+        for field, value in [("GITHUB_REPOSITORY", "other/tines-mcp"), ("GITHUB_REF", "refs/tags/v0.1.2"),
                              ("GITHUB_EVENT_NAME", "pull_request"), ("RELEASE_SOURCE", "main"),
                              ("RELEASE_SOURCE", "a" * 39), ("GITHUB_SHA", "main"),
                              ("RELEASE_TAG", "v01.1.0"), ("RELEASE_TAG", "v1.2.3-rc.1"),
@@ -93,13 +93,14 @@ class DispatchTests(unittest.TestCase):
 class AutomaticDispatchTests(unittest.TestCase):
     def automatic(self, **overrides):
         return environment(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                           RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success", **overrides)
+                           RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success", **overrides)
 
-    def test_creation_is_derived_only_for_first_011_handoff(self):
+    def test_creation_is_derived_only_for_first_012_handoff(self):
         self.assertTrue(r.dispatch(self.automatic())["creation_eligible"])
         for values in [dict(GITHUB_RUN_ATTEMPT="2"), dict(GITHUB_RUN_ATTEMPT=""),
                        dict(GITHUB_RUN_ATTEMPT="01"), dict(RELEASE_TAG="v0.1.0", RELEASE_VERSION="0.1.0"),
-                       dict(RELEASE_TAG="v0.1.2", RELEASE_VERSION="0.1.2")]:
+                       dict(RELEASE_TAG="v0.1.1", RELEASE_VERSION="0.1.1"),
+                       dict(RELEASE_TAG="v0.1.3", RELEASE_VERSION="0.1.3")]:
             with self.subTest(values=values):
                 self.assertFalse(r.dispatch(dict(self.automatic(), **values))["creation_eligible"])
 
@@ -109,11 +110,11 @@ class AutomaticDispatchTests(unittest.TestCase):
         for field, values in {
             "RELEASE_CREATED": ["", "false", "TRUE", "True"],
             "RELEASE_PLEASE_RESULT": ["", "failure", "cancelled", "skipped"],
-            "RELEASE_VERSION": ["", "0.2.0", "0.1.1-rc.1", "0.1.1\n"],
+            "RELEASE_VERSION": ["", "0.2.0", "0.1.2-rc.1", "0.1.2\n"],
             "RELEASE_SOURCE": ["", "a" * 39, "A" * 40, "main"],
-            "RELEASE_TAG": ["", "v0.1.1-rc.1", "v01.1.0"],
+            "RELEASE_TAG": ["", "v0.1.2-rc.1", "v01.1.0"],
             "GITHUB_REPOSITORY": ["other/repo"],
-            "GITHUB_REF": ["refs/heads/other", "refs/tags/v0.1.1"],
+            "GITHUB_REF": ["refs/heads/other", "refs/tags/v0.1.2"],
             "GITHUB_EVENT_NAME": ["release", "pull_request"],
             "RELEASE_MODE": ["bootstrap"],
             "BOOTSTRAP_CONFIRMATION": ["obsolete confirmation"],
@@ -130,11 +131,11 @@ class AutomaticDispatchTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def lookup(self, replies, allow_unavailable=False):
         with patch.object(r.Registry, "get", side_effect=replies):
-            return r.Registry("test").lookup("0.1.1", allow_unavailable)
+            return r.Registry("test").lookup("0.1.2", allow_unavailable)
 
     def test_positive_access_and_absent_tag(self):
         self.assertEqual(self.lookup(visible()), (17, None))
-        self.assertEqual(self.lookup(visible([version(tags=["0.1.1"])])), (17, DIGEST))
+        self.assertEqual(self.lookup(visible([version(tags=["0.1.2"])])), (17, DIGEST))
 
     def test_http_errors_never_mean_absence(self):
         for status in [301, 401, 403, 404, 429, 500, 503]:
@@ -145,7 +146,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_creation_allowance_requires_structured_exact_route_404(self):
         with patch.object(r.Registry, "get", return_value=unavailable()) as get:
-            self.assertEqual(r.Registry("test").lookup("0.1.1", True), (None, None))
+            self.assertEqual(r.Registry("test").lookup("0.1.2", True), (None, None))
             get.assert_called_once_with(r.PACKAGE)
         for response in [(404, {}, None), (404, unavailable()[1], link()), (404, unavailable()[1], ""), (404, "Not Found", None),
                          (404, dict(message="Not Found", documentation_url="https://evil.example/"), None),
@@ -155,7 +156,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_creation_allowance_keeps_positive_access_enumeration(self):
         self.assertEqual(self.lookup(visible(), True), (17, None))
-        self.assertEqual(self.lookup(visible([version(tags=["0.1.1"])]), True), (17, DIGEST))
+        self.assertEqual(self.lookup(visible([version(tags=["0.1.2"])]), True), (17, DIGEST))
         for status in [301, 401, 403, 404, 429, 500, 503]:
             with self.subTest(status=status), self.assertRaises(r.ReleaseError):
                 self.lookup([(200, package(), None), (status, unavailable()[1], None)], True)
@@ -165,20 +166,20 @@ class RegistryTests(unittest.TestCase):
             r.Registry("")
         for fail in [OSError("offline"), r.http.client.HTTPException("offline")]:
             with patch.object(r.http.client.HTTPSConnection, "request", side_effect=fail), self.assertRaises(r.ReleaseError):
-                r.Registry("test").lookup("0.1.1")
+                r.Registry("test").lookup("0.1.2")
 
     def test_fixed_api_origin_no_redirect_and_malformed_json(self):
         with patch.object(r.http.client, "HTTPSConnection") as connection:
             response = connection.return_value.getresponse.return_value
             response.status, response.read.return_value = 302, b'{}'
             with self.assertRaises(r.ReleaseError):
-                r.Registry("test").lookup("0.1.1")
+                r.Registry("test").lookup("0.1.2")
             connection.assert_called_once_with("api.github.com", timeout=60)
             self.assertEqual(connection.return_value.request.call_args.args[:2], ("GET", r.PACKAGE))
             self.assertEqual(connection.return_value.request.call_args.kwargs["headers"]["Authorization"], "Bearer test")
             response.read.return_value = b'not json'
             with self.assertRaises(r.ReleaseError):
-                r.Registry("test").lookup("0.1.1", True)
+                r.Registry("test").lookup("0.1.2", True)
 
     def test_oversized_and_corrupt_404_cannot_authorize_creation(self):
         for body in [b'x' * (8 * 1024 * 1024 + 1), b'{"message":"Not Found","message":"Not Found"}',
@@ -188,7 +189,7 @@ class RegistryTests(unittest.TestCase):
                 response.status, response.read.return_value = 404, body
                 response.getheader.return_value = None
                 with self.assertRaises(r.ReleaseError):
-                    r.Registry("test").lookup("0.1.1", True)
+                    r.Registry("test").lookup("0.1.2", True)
                 connection.return_value.close.assert_called_once()
 
     def test_wrong_package_identity(self):
@@ -203,16 +204,16 @@ class RegistryTests(unittest.TestCase):
     def test_find_version_beyond_page_one(self):
         rows = [version(i + 1, "sha256:" + f"{i:064x}") for i in range(100)]
         replies = [(200, package(), None), (200, rows, link()),
-                   (200, [version(101, DIGEST, ["0.1.1"])], link(page=1, relation="prev"))]
+                   (200, [version(101, DIGEST, ["0.1.2"])], link(page=1, relation="prev"))]
         self.assertEqual(self.lookup(replies), (17, DIGEST))
         for fail in [(503, {}, None), (200, {}, None)]:
             with self.subTest(fail=fail), self.assertRaises(r.ReleaseError):
                 self.lookup(replies[:2] + [fail])
 
     def test_malformed_duplicate_or_conflicting_versions(self):
-        for rows in [{}, [dict(id=1)], [version(tags=["0.1.1", "0.1.1"])],
+        for rows in [{}, [dict(id=1)], [version(tags=["0.1.2", "0.1.2"])],
                      [version(), version()], [version(), version(2)],
-                     [version(tags=["0.1.1"]), version(2, OTHER, ["0.1.1"])],
+                     [version(tags=["0.1.2"]), version(2, OTHER, ["0.1.2"])],
                      [version(digest="not-digest")], [version(identifier=True)], [version(tags=[1])]]:
             with self.subTest(rows=rows), self.assertRaises(r.ReleaseError):
                 self.lookup([(200, package(), None), (200, rows, None)])
@@ -287,22 +288,22 @@ class OrchestrationTests(unittest.TestCase):
         self.workflow, self.source = self.base / "workflow", self.base / "source"
         self.workflow.mkdir()
         self.source.mkdir()
-        (self.source / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "tines-mcp"\nversion = "0.1.1"\n')
+        (self.source / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "tines-mcp"\nversion = "0.1.2"\n')
         self.env = environment(GITHUB_OUTPUT=str(self.base / "outputs"), DOCKER_CONFIG=str(self.base / "docker"))
         self.patch_env = patch.dict(os.environ, self.env, clear=True)
         self.patch_env.start()
         self.addCleanup(self.patch_env.stop)
         self.commands, self.fail_command = [], None
         self.paths = []
-        self.push_output = f"0.1.1: digest: {DIGEST} size: 1234"
+        self.push_output = f"0.1.2: digest: {DIGEST} size: 1234"
         self.local_image_id = "local-immutable-image-id"
-        self.manifest_version = "0.1.1"
+        self.manifest_version = "0.1.2"
         self.head = SOURCE_SHA
         self.remote = SOURCE_SHA
-        self.remote_tag_name = "v0.1.1"
+        self.remote_tag_name = "v0.1.2"
         self.user = "10001:10001"
         self.label_overrides = {}
-        self.replies = visible() + visible() + visible([version(tags=["0.1.1"])])
+        self.replies = visible() + visible() + visible([version(tags=["0.1.2"])])
         self.signer = WORKFLOW_SHA
         self.patch_run = patch.object(r, "run", side_effect=self.command)
         self.patch_run.start()
@@ -313,7 +314,7 @@ class OrchestrationTests(unittest.TestCase):
         self.patch_releases = patch.object(r, "Releases")
         self.api = self.patch_releases.start().return_value
         self.addCleanup(self.patch_releases.stop)
-        self.api.listing.return_value = [dict(id=41, tag_name="v0.1.1", target_commitish=SOURCE_SHA,
+        self.api.listing.return_value = [dict(id=41, tag_name="v0.1.2", target_commitish=SOURCE_SHA,
                                             prerelease=False, draft=True, immutable=False, published_at=None)]
         self.api.release.return_value = self.api.listing.return_value[0]
         self.api.evidence.return_value = None
@@ -372,9 +373,9 @@ class OrchestrationTests(unittest.TestCase):
 
     def first_handoff(self):
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success")
+                          RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success")
         self.release.resolve()
-        self.replies = [unavailable(), unavailable()] + visible([version(tags=["0.1.1"])])
+        self.replies = [unavailable(), unavailable()] + visible([version(tags=["0.1.2"])])
 
     def test_publish_once_then_verify_and_anonymous_runtime(self):
         self.release.publish()
@@ -382,7 +383,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.release.state["stage"], "digest_observed")
         self.assertEqual(json.loads((self.release.record.parent / "release-identity.json").read_text()),
                          r.identity(self.release.state, WORKFLOW_SHA))
-        self.replies += visible([version(tags=["0.1.1"])])
+        self.replies += visible([version(tags=["0.1.2"])])
         self.release.accept()
         self.assertEqual(self.release.state["validation"], "passed")
         calls = [args for args, *_ in self.commands]
@@ -394,16 +395,16 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_automatic_normal_publication_then_manual_recovery(self):
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success")
+                          RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success")
         self.release.resolve()
         self.release.publish()
-        self.replies += visible([version(tags=["0.1.1"])])
+        self.replies += visible([version(tags=["0.1.2"])])
         self.release.accept()
         self.assertEqual(self.release.state["validation"], "passed")
         os.environ.update(GITHUB_EVENT_NAME="workflow_dispatch", RELEASE_CREATED="",
                           RELEASE_VERSION="", RELEASE_PLEASE_RESULT="skipped")
         self.fresh_record()
-        self.replies = visible([version(tags=["0.1.1"])]) * 2
+        self.replies = visible([version(tags=["0.1.2"])]) * 2
         self.release.publish()
         self.release.accept()
         self.assertTrue(self.release.state["reused"])
@@ -412,7 +413,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_automatic_rerun_unavailable_package_cannot_create(self):
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success", GITHUB_RUN_ATTEMPT="2")
+                          RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success", GITHUB_RUN_ATTEMPT="2")
         self.release.resolve()
         self.replies = [unavailable()]
         with self.assertRaises(r.ReleaseError):
@@ -423,7 +424,7 @@ class OrchestrationTests(unittest.TestCase):
     def test_automatic_invalid_handoff_zero_registry_or_engine_commands(self):
         self.commands.clear()
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="failure")
+                          RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="failure")
         before = copy.deepcopy(self.replies)
         with self.assertRaises(r.ReleaseError):
             self.release.resolve()
@@ -433,7 +434,7 @@ class OrchestrationTests(unittest.TestCase):
     def test_first_publication_acceptance_then_positive_access_recovery(self):
         self.first_handoff()
         self.release.publish()
-        self.replies += visible([version(tags=["0.1.1"])])
+        self.replies += visible([version(tags=["0.1.2"])])
         self.release.accept()
         self.assertEqual(self.release.state["validation"], "passed")
         self.assertTrue(self.release.state["creation_eligible"])
@@ -451,7 +452,7 @@ class OrchestrationTests(unittest.TestCase):
         os.environ.update(GITHUB_EVENT_NAME="workflow_dispatch")
         self.release = r.Release(self.workflow, self.source, self.base / "recovery/record.json")
         self.release.resolve()
-        self.replies = visible([version(tags=["0.1.1"])]) * 2
+        self.replies = visible([version(tags=["0.1.2"])]) * 2
         self.release.publish()
         self.signer = OLD_WORKFLOW
         self.release.accept()
@@ -541,7 +542,7 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(self.pushes(), [])
 
     def test_package_or_tag_appearing_before_push_zero_writes(self):
-        for second in [visible([version(tags=["0.1.1"])]), visible(identifier=18)]:
+        for second in [visible([version(tags=["0.1.2"])]), visible(identifier=18)]:
             self.replies = visible() + second
             with self.assertRaises(r.ReleaseError):
                 self.release.publish()
@@ -574,8 +575,8 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIn("Positive-access investigation only", self.release.state["next_action"])
 
     def test_post_push_metadata_error_or_digest_conflict_no_second_push(self):
-        for post in [[(403, {}, None)], visible([version(tags=["0.1.1"], digest=OTHER)]),
-                     visible([version(tags=["0.1.1"])], identifier=18)]:
+        for post in [[(403, {}, None)], visible([version(tags=["0.1.2"], digest=OTHER)]),
+                     visible([version(tags=["0.1.2"])], identifier=18)]:
             self.commands.clear()
             self.fresh_record()
             self.replies = visible() + visible() + post
@@ -656,7 +657,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_first_handoff_reuses_visible_digest_without_build_or_new_attestations(self):
         self.first_handoff()
-        self.replies = visible([version(tags=["0.1.1"])]) * 2
+        self.replies = visible([version(tags=["0.1.2"])]) * 2
         self.release.publish()
         self.signer = OLD_WORKFLOW
         self.release.accept()
@@ -687,7 +688,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_first_creation_postpush_conflicts_never_emit_attestation_handoff(self):
         for post in [[unavailable()], [(403, {}, None)], visible(),
-                     visible([version(tags=["0.1.1"], digest=OTHER)]),
+                     visible([version(tags=["0.1.2"], digest=OTHER)]),
                      [(200, dict(package(), repository={}), None)]]:
             with self.subTest(post=post):
                 self.commands.clear()
@@ -721,12 +722,12 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_later_version_unavailable_package_stops_before_build(self):
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_TAG="v0.1.2", RELEASE_VERSION="0.1.2",
+                          RELEASE_TAG="v0.1.3", RELEASE_VERSION="0.1.3",
                           RELEASE_PLEASE_RESULT="success")
-        self.manifest_version = "0.1.2"
-        (self.source / "Cargo.lock").write_text('[[package]]\nname="tines-mcp"\nversion="0.1.2"\n')
-        self.remote_tag_name = "v0.1.2"
-        self.api.release.return_value["tag_name"] = "v0.1.2"
+        self.manifest_version = "0.1.3"
+        (self.source / "Cargo.lock").write_text('[[package]]\nname="tines-mcp"\nversion="0.1.3"\n')
+        self.remote_tag_name = "v0.1.3"
+        self.api.release.return_value["tag_name"] = "v0.1.3"
         self.release.resolve()
         self.replies = [unavailable()]
         with self.assertRaises(r.ReleaseError):
@@ -738,9 +739,9 @@ class OrchestrationTests(unittest.TestCase):
 
     def select_existing(self):
         self.fresh_record()
-        self.replies = visible([version(tags=["0.1.1"])])
+        self.replies = visible([version(tags=["0.1.2"])])
         self.release.publish()
-        self.replies = visible([version(tags=["0.1.1"])])
+        self.replies = visible([version(tags=["0.1.2"])])
 
     def test_existing_image_bad_attestation_zero_builds_zero_pushes(self):
         self.select_existing()
@@ -776,7 +777,7 @@ class OrchestrationTests(unittest.TestCase):
         with self.assertRaises(r.ReleaseError):
             self.release.accept()
         self.remote = SOURCE_SHA
-        self.replies = visible([version(tags=["0.1.1"], digest=OTHER)])
+        self.replies = visible([version(tags=["0.1.2"], digest=OTHER)])
         with self.assertRaises(r.ReleaseError):
             self.release.accept()
         self.assertEqual(self.pushes(), [])
@@ -795,11 +796,11 @@ class GitSourceTests(unittest.TestCase):
             git("clone", str(remote), str(work), cwd=base)
             git("config", "user.name", "Release test")
             git("config", "user.email", "release@example.invalid")
-            (work / "source").write_text("version 0.1.1\n")
+            (work / "source").write_text("version 0.1.2\n")
             git("add", ".")
             git("commit", "-m", "feat: source")
             sha = git("rev-parse", "HEAD")
-            git("tag", "-a", "v0.1.1", "-m", "source")
+            git("tag", "-a", "v0.1.2", "-m", "source")
             (work / "orchestration").write_text("workflow\n")
             git("add", ".")
             git("commit", "-m", "ci: orchestration")
@@ -813,7 +814,7 @@ class GitSourceTests(unittest.TestCase):
                 r.resolve(work, state)
             cli = ["python3", str(ROOT / "scripts/release.py"), "resolve", "--workflow", str(work),
                    "--source", str(base / "source"), "--record", str(base / "record.json")]
-            row = dict(id=41, tag_name="v0.1.1", target_commitish=sha,
+            row = dict(id=41, tag_name="v0.1.2", target_commitish=sha,
                        prerelease=False, draft=True, immutable=False, published_at=None)
             with patch.dict(os.environ, env), patch.object(r, "Releases") as api:
                 api.return_value.listing.return_value = [row]
@@ -822,7 +823,7 @@ class GitSourceTests(unittest.TestCase):
                 r.Release(work, base / "source", base / "record.json").resolve()
             self.assertIn(f"source_sha={sha}", (base / "output").read_text())
             # Move only the remote tag; local tag remains the old source.
-            git("push", "--force", "origin", "HEAD:refs/tags/v0.1.1")
+            git("push", "--force", "origin", "HEAD:refs/tags/v0.1.2")
             result = subprocess.run(cli, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Remote tag/source mismatch", result.stderr)
