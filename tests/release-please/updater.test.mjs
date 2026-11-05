@@ -21,7 +21,7 @@ const quiet = Object.fromEntries(['info', 'warn', 'error', 'debug', 'trace'].map
 setLogger(quiet);
 
 // Reads only: no token, network client, or mutation methods exist.
-async function candidate(message, files = initial) {
+async function candidate(message, files = initial, changedPaths = ['src/main.rs']) {
   const github = {
     repository: {owner: 'dstoc', repo: 'tines-mcp'},
     async getFileContentsOnBranch(path, branch) {
@@ -35,7 +35,7 @@ async function candidate(message, files = initial) {
     async *releaseIterator() {},
     async *tagIterator() {},
     async *mergeCommitIterator() {
-      yield {sha: 'a'.repeat(40), message, files: ['src/main.rs']};
+      yield {sha: 'a'.repeat(40), message, files: changedPaths};
       yield {sha: config['bootstrap-sha'], message: 'feat: old history must be excluded', files: ['src/main.rs']};
       throw new Error('Read past bootstrap boundary');
     },
@@ -117,4 +117,27 @@ for (const [kind, expected] of [
 
 test('non-release commits produce no candidate', async () => {
   assert.deepEqual(await candidate('ci: adjust workflow'), []);
+});
+
+test('initial chore squash footer creates only the intended 0.1.1 release PR', async () => {
+  const message = 'chore: prepare initial 0.1.1 release PR\n\n'
+    + 'Document the initial release PR checks and preserve the owner-only 0.1.0 bootstrap.\n'
+    + 'Refs: tines-mcp/36';
+  const changedPaths = ['docs/releases.md', 'tests/release-please/updater.test.mjs'];
+  const files = {...initial, 'docs/releases.md': read('docs/releases.md')};
+  // A footer in documentation alone is not a commit-body release instruction.
+  assert.match(files['docs/releases.md'], /Release-As: 0\.1\.1/);
+  assert.deepEqual(await candidate(message, files, changedPaths), []);
+  const prs = await candidate(`${message}\n\nRelease-As: 0.1.1`, files, changedPaths);
+  assert.equal(prs.length, 1);
+  const [pr] = prs;
+  assert.equal(pr.version.toString(), '0.1.1');
+  assert.equal(pr.title.toString(), 'chore(main): release 0.1.1');
+  assert.deepEqual(pr.labels, ['autorelease: pending']);
+  assert.deepEqual(pr.updates.map(u => u.path).sort(),
+    ['.release-please-manifest.json', 'CHANGELOG.md', 'Cargo.lock', 'Cargo.toml']);
+  const updated = apply(pr, files);
+  unchangedDependencies(updated, '0.1.1');
+  assert.doesNotMatch(updated['CHANGELOG.md'], /old history/);
+  assert.match(updated['CHANGELOG.md'], /prepare initial 0\.1\.1 release PR/);
 });

@@ -47,6 +47,85 @@ GitHub suppresses tag-push workflows for tags created with `GITHUB_TOKEN`. This
 flow uses a same-run dependency, not a tag-triggered workflow or a second dispatch.
 See [GitHub's token-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 
+## Prepare the initial 0.1.1 release PR
+
+The initial automation commit uses `ci:`, which does not create a release
+candidate. The pinned action bundles Release Please 17.3.0, whose
+[commit-body `Release-As` mechanism](https://github.com/googleapis/release-please/blob/v17.3.0/README.md#how-do-i-change-the-version-number)
+can request the first `0.1.1` PR from the `0.1.0` seed. Keep the seed,
+`bootstrap-sha`, workflow, permissions, and publishing safeguards unchanged.
+
+1. Independently review the preparatory docs and regression-test change. Use
+   this conventional title and final squash message:
+
+   ```text
+   chore: prepare initial 0.1.1 release PR
+
+   Document the initial release PR checks and preserve the owner-only 0.1.0 bootstrap.
+   Refs: tines-mcp/36
+
+   Release-As: 0.1.1
+   ```
+
+2. Preserve the literal, unindented footer at the end of the preparatory PR
+   body, outside a code fence, and in the branch commit body. The repository
+   permits squash merges only and defaults to `PR_TITLE` / `PR_BODY`; a branch
+   footer alone can be lost. Before merging, recheck main, pending release PRs,
+   normal CI, independent review, and the actual squash message. With the CLI,
+   supply the reviewed subject and body explicitly:
+
+   ```sh
+   gh pr merge <preparatory-pr-number> -R dstoc/tines-mcp --squash \
+     --match-head-commit <reviewed-head-sha> \
+     --subject 'chore: prepare initial 0.1.1 release PR' --body-file <reviewed-body-file>
+   gh api repos/dstoc/tines-mcp/commits/<squash-sha> --jq .commit.message
+   ```
+
+   Confirm that the merged message contains `Release-As: 0.1.1` as a separate
+   body line. The footer in this guide does not trigger a release. Do not add
+   a persistent `release-as` configuration override.
+
+3. Inspect the `release.yml` push run with the exact preparatory squash SHA,
+   then inspect the generated PR:
+
+   ```sh
+   gh run list -R dstoc/tines-mcp --workflow release.yml --event push \
+     --json databaseId,headSha,status,conclusion,url
+   gh run view <run-id> -R dstoc/tines-mcp
+   gh pr list -R dstoc/tines-mcp --base main --state open \
+     --label 'autorelease: pending' --json number,title,url,headRefName
+   gh pr diff <release-pr-number> -R dstoc/tines-mcp
+   gh release list -R dstoc/tines-mcp
+   ```
+
+   Expect exactly one pending release PR, normally titled
+   `chore(main): release 0.1.1`, with these four updates:
+
+   | File | Expected change |
+   | --- | --- |
+   | `Cargo.toml` | Package version becomes `0.1.1`; dependencies stay unchanged. |
+   | `Cargo.lock` | Only the local `tines-mcp` version becomes `0.1.1`; dependency versions, sources, checksums, and edges stay unchanged. |
+   | `.release-please-manifest.json` | Root version becomes `0.1.1`. |
+   | `CHANGELOG.md` | First `0.1.1` entry uses history after the bootstrap boundary, including the preparatory chore. |
+
+   Confirm Release Please succeeded, the publisher was skipped, and no
+   unexpected source release was created. Record the squash SHA, run URL,
+   release PR URL, and inspection results in tines-mcp/36. A successful job
+   alone does not prove the release PR exists.
+
+If no PR appears, inspect the job log, actual commit footer, pending release
+PRs, and Actions PR-creation policy. Report denied access as a blocked
+prerequisite. Do not change credentials, repository settings, or publication
+conditions. Do not dispatch `release.yml` to create a PR; its manual entry
+point publishes or recovers an image.
+
+Leave the generated release PR open for separate review and authorization.
+This preparatory change does not authorize its approval or merge, a `v0.1.1`
+tag or source release, bootstrap execution, or publication. Before later normal
+`0.1.1` publication, the owner must complete the separate owner-confirmed
+`0.1.0` GHCR bootstrap below and establish package access. Merging the generated
+release PR can create a source release and start normal publication.
+
 ## Owner setup before publication
 
 No real release, tag, release PR merge, or publishing dispatch belongs to
