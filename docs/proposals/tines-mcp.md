@@ -4,7 +4,7 @@
 
 Provide direct, useful access to Tines from MCP clients without routing reads through another agent or requiring clients to understand its REST API. Clients should be able to explore a backlog, understand dependencies and decisions, inspect execution progress, and read the evidence produced by a run.
 
-Keep Tines responsible for authorization and business semantics. Keep the adapter responsible for protocol translation, bounded retrieval, project selection, and accurate error reporting.
+Keep Tines responsible for authorization and business semantics. Keep the adapter responsible for protocol translation, bounded retrieval, API query selection, and accurate error reporting.
 
 ## Problem statement
 
@@ -32,10 +32,10 @@ The request path is:
 
 ```text
 MCP client -> private HTTP endpoint -> rmcp tool handler
-           -> visibility checks -> shared Tines HTTP client -> Tines
+           -> shared Tines HTTP client -> Tines
 ```
 
-Share connection pools and immutable configuration across handlers. Allow request-local memoization of parent lookups, but do not persist Tines data or cache authorization/visibility decisions across calls.
+Share connection pools and immutable configuration across handlers. Do not persist Tines data or cache authorization decisions across calls.
 
 Do not invoke the Tines CLI, scrape its UI, access its database, or copy its business-rule implementation. A generic arbitrary-HTTP tool and mechanically exposing every GET route are both rejected: neither produces a sufficiently controlled or useful interface.
 
@@ -72,7 +72,7 @@ This is 19 focused tools, covering multiple routes where that matches one user o
 
 Use the global `/issues` route with its project filter for project-scoped lists. There is no need to expose a second list tool or use the project-specific list route merely because it exists.
 
-`get_issue` accepts exactly one of `issue_id` or the pair `project_id` and positive integer `number`. Prefer IDs for project selectors; project names are display values, not identity or exclusion keys. Check the returned issue's current project as well as any project in its lookup address: an old issue address can survive a transfer.[^issue-address]
+`get_issue` accepts exactly one of `issue_id` or the pair `project_id` and positive integer `number`. Prefer IDs for project selectors; project names are display values, not identity keys. Preserve the returned issue's current project attribution: an old issue address can survive a transfer.[^issue-address]
 
 Issue detail already supplies comments and relationships. Do not fetch them again or create separate dependency tools. Keep effective context, artifacts, run history and activity separate; do not automatically build an expensive all-inclusive issue bundle.[^issue-shapes]
 
@@ -104,27 +104,21 @@ Generate project, issue and workflow browser links only for verified routes. Pre
 
 Each paginated tool call fetches one upstream page. Return every allowed record from that page and preserve its upstream `next_cursor` unchanged. Do not fill a page by scanning ahead, cut a successful page to a second item limit, or manufacture cursors from the last visible record.
 
-Exclusions can produce an empty page with a non-null cursor. This means continue, not end of collection. End of traversal is `next_cursor: null`, never `items.is_empty()` or a short page. An oversized result is an explicit failure, not a silently shortened page.
+An upstream page can be empty with a non-null cursor. This means continue, not end of collection. End of traversal is `next_cursor: null`, never `items.is_empty()` or a short page. An oversized result is an explicit failure, not a silently shortened page.
 
-Validate page sizes against the endpoint's supported range. Keep cursors opaque, bound their input length, and pass them only as encoded query parameters. Document that callers must retain filters across continuation and restart when changing them. Cursors never bypass current visibility checks. Reject an immediately repeated continuation cursor as an upstream pagination error.
+Validate page sizes against the endpoint's supported range. Keep cursors opaque, bound their input length, and pass them only as encoded query parameters. Document that callers must retain filters across continuation and restart when changing them. Reject an immediately repeated continuation cursor as an upstream pagination error.
 
 Known unpaginated collections are returned as complete collections, with `next_cursor: null` normalized where necessary. Do not pretend unsupported `limit` or `cursor` parameters work on them. A missing pagination field on an endpoint expected to paginate is a schema error, not evidence of completion.
 
 There is no adapter-imposed maximum page count. Traversal is nevertheless live rather than transactional: changes during traversal, particularly collections ordered by mutable update timestamps, can affect what is observed. An event pagination cursor is not a durable replay checkpoint.[^issues][^events]
 
-### Project exclusions: selection, not a second authorization system
+### Token authorization
 
-Configure exclusions by immutable project ID. The generic default is an empty set. This deployment's configuration excludes the shared **Tines** project and does not exclude **tines-runner-rs**. Resolve the intended project during deployment; never perform a startup name-based guess or hardcode its ID in the application.
+Tines enforces the configured token's project restrictions. Return every token-visible record in each upstream page and send direct reads to the normal API endpoints. Preserve ordinary API query selection, including a caller's project or issue selector. Do not add an adapter allowlist, exclusion policy, permission discovery, or text redaction.
 
-Exclusions remove project-owned records from discovery and block their direct retrieval through the adapter. Apply them to projects, issues, project/issue-scoped context, artifacts, runs, dispatch and activity. Reject an explicitly excluded project selector before querying it, and check returned attribution where lookup aliases or transfers can change the current project.
+Keep identity validation and parent reads needed for artifact consistency and links. Optional run and dispatch issue links do not become authorization gates. Required upstream permission errors retain their native status and error information.
 
-Use the object's project ID where available. For issue children, resolve their owning issue; for an unscoped run, use its `issue_id`, not the display project name. Reuse an explicitly checked request scope when the upstream endpoint enforces it, rather than resolving every row again. Memoize resolutions only within the current request. If a required ownership lookup fails, report the failure and do not guess or return a partial successful page. When no exclusions are configured, do not perform lookups needed solely for this filter.
-
-For events, check both recorded event-project attribution and the current issue-project attribution where available. An event with either attribution excluded is omitted. Genuine workspace-level records without a project remain workspace-level; do not classify them from prose or names.
-
-**This is deliberately not a confidentiality or recursive text-redaction guarantee.** Allowed issues can retain references to excluded issues; allowed comments, logs, artifacts and global guidance can mention excluded projects. Shared workflows, labels and workspace-wide counts are not automatically re-scoped to the filtered project set. Do not delete dependency information and thereby imply an issue is ready.
-
-Direct expansion of an excluded reference is blocked. Stronger confidentiality must be enforced by Tines' authorization and documented projections, not by attempting to scrub arbitrary text in the adapter. This narrower, explicit contract keeps the adapter thin and avoids promising a security boundary it cannot provide.
+This replaces the earlier adapter exclusion policy under tines-mcp/13. See [Remove adapter project exclusions](remove-project-exclusions.md) for the approved removal and deployment consequences.
 
 ### Artifacts, logs and bounded content
 
@@ -146,13 +140,13 @@ An oversized JSON result or unpaginated collection fails explicitly with the lim
 
 ### Errors, deadlines and cancellation
 
-Upstream API failures are MCP tool execution errors with `isError: true`, not successful empty results. Preserve the HTTP status, Tines error code, safe message and useful bounded details. Include the error source and safe `Retry-After` information. Distinguish upstream failures from local validation, visibility, timeout, transport and schema errors.[^tools]
+Upstream API failures are MCP tool execution errors with `isError: true`, not successful empty results. Preserve the HTTP status, Tines error code, safe message and useful bounded details. Include the error source and safe `Retry-After` information. Distinguish upstream failures from local validation, timeout, transport and schema errors.[^tools]
 
-An upstream `401` or `403` must not become an MCP HTTP authentication challenge: the MCP endpoint is noauth, and the failing credential is held by the server. Do not forward upstream cookies or authentication headers. An upstream `404` remains missing-or-inaccessible; do not infer which. A locally excluded resource produces an adapter `resource_unavailable` error, not a fabricated upstream response.
+An upstream `401` or `403` must not become an MCP HTTP authentication challenge: the MCP endpoint is noauth, and the failing credential is held by the server. Do not forward upstream cookies or authentication headers. An upstream `404` remains missing-or-inaccessible; do not infer which.
 
 For malformed JSON, an unexpected success shape, or non-JSON error pages, preserve the status and return a safe diagnostic without dumping the response body. Do not use broad catch-and-return-empty handling. Preserve intentional empty or redacted successful responses from Tines; the adapter cannot recover permissions or facts the upstream response does not reveal.
 
-Use a 5-second connection timeout and a 45-second overall tool deadline, including visibility lookups and body reads. Limit concurrent tool work to four calls and upstream requests to eight across the process. Rate-limit tool calls to ten per second with a burst of twenty by default. Reject excess admitted work rather than queuing it without bound; all internal waits remain inside the tool deadline. Honor cancellation signaled by the SDK and shutdown, and bound other interrupted requests by the deadline.
+Use a 5-second connection timeout and a 45-second overall tool deadline, including parent lookups and body reads. Limit concurrent tool work to four calls and upstream requests to eight across the process. Rate-limit tool calls to ten per second with a burst of twenty by default. Reject excess admitted work rather than queuing it without bound; all internal waits remain inside the tool deadline. Honor cancellation signaled by the SDK and shutdown, and bound other interrupted requests by the deadline.
 
 Do not automatically retry upstream failures initially. This makes latency and upstream request counts predictable and leaves rate-limit guidance visible to the caller. Callers can repeat safe reads deliberately; no stale-data fallback is provided.
 
@@ -170,7 +164,6 @@ Use verified HTTPS upstream; permit HTTP to a loopback origin only when `TINES_A
 |---|---|
 | `TINES_BASE_URL` | Required upstream origin; the adapter appends `/api/v1` |
 | `TINES_API_TOKEN_FILE` or `TINES_API_TOKEN` | Exactly one server-side token source |
-| `TINES_EXCLUDED_PROJECT_IDS` | Optional comma-separated immutable IDs; empty generic default |
 | `TINES_WEB_URL` | Optional browser origin; defaults to the Tines origin |
 | `TINES_ALLOW_HTTP` | Default false; permits loopback HTTP for development only |
 | `MCP_BIND_ADDR` | Listener; defaults to `127.0.0.1:8080` |
@@ -198,9 +191,9 @@ CI uses a local mock HTTP server and non-sensitive fixtures. It requires no live
 
 Test every tool's schema, exact upstream method/path/query mapping, source-shape handling and result encoding. Record representative owner/member fixtures and verify that missing or redacted fields are not invented. Verify that ordinary issue reads do not fan out to comments, context, artifacts or runs unnecessarily.
 
-Exercise pagination with equal timestamps, short pages, an excluded-only page followed by allowed records, empty pages with continuation, and traversal beyond 100 records. Compare all returned IDs with the expected set and assert that no successful call drops allowed records to satisfy a secondary size limit.
+Exercise pagination with equal timestamps, short pages, empty pages with continuation, and traversal beyond 100 records. Compare all returned IDs with the expected set and assert that no successful call drops allowed records to satisfy a secondary size limit.
 
-Exercise exclusions through direct IDs, project/number aliases, moved issues, context items, artifact versions/paths, runs and events. Test failed ownership resolution and ensure no name-based fallback. Also test the documented boundary: an allowed record may retain a cross-project reference, but retrieving the excluded target fails.
+Exercise token-visible project and issue lists, direct IDs, project/number aliases, moved issues, context items, artifact versions/paths, runs and events. Assert that policy-only parent lookups do not occur. Verify required upstream denials retain their statuses and optional run links do not gate authorized reads.
 
 Exercise UTF-8 and binary chunk reconstruction, source changes between chunks, artifact version changes, expired logs, declared and undeclared oversized bodies, serialized-result bounds, timeouts and cancellation. Test upstream 401/403/404/410/422/429/5xx, malformed responses and token-bearing diagnostic strings.
 
@@ -216,9 +209,9 @@ The real-deployment read-only smoke test covers every included endpoint family u
 
 A standard MCP client can connect without MCP-layer authentication and inspect Tines projects, issues, workflows, relationships, comments, context, artifacts, runs, dispatch and activity through the documented tools.
 
-Pagination reaches every available matching record in a quiescent test dataset, including through excluded-only pages. Larger content is either retrieved through explicit bounded continuation or rejected with a truthful limit; nothing is silently presented as complete.
+Pagination reaches every available matching record in a quiescent test dataset, including through empty pages with continuation. Larger content is either retrieved through explicit bounded continuation or rejected with a truthful limit; nothing is silently presented as complete.
 
-Project selection behaves consistently within its documented scope. Upstream failures and redactions remain visible, the adapter's upstream credential does not appear in client results or diagnostics, and the registry contains no business-data mutation tools.
+API query selection behaves consistently within its documented scope. Upstream failures and redactions remain visible, the adapter's upstream credential does not appear in client results or diagnostics, and the registry contains no business-data mutation tools.
 
 The adapter restarts without lost application state because it has none to restore. It is usable through the intended private connection, has a passing required `test` check, and remains a small independently deployable Rust service.
 
@@ -239,16 +232,15 @@ tines-mcp/
 │   ├── config.rs
 │   ├── server.rs
 │   ├── tines.rs
-│   ├── visibility.rs
 │   ├── content.rs
 │   └── tools/
 └── tests/
     └── fixtures/
 ```
 
-`tines.rs` owns the shared HTTP client, fixed route construction, bounded body reading and upstream error decoding. `visibility.rs` owns project-attribution checks. `content.rs` owns digest-checked chunking. Domain tool modules contain typed inputs and minimal adaptation, not duplicated HTTP or policy logic.
+`tines.rs` owns the shared HTTP client, fixed route construction, bounded body reading and upstream error decoding. `content.rs` owns digest-checked chunking. Domain tool modules contain typed inputs and minimal adaptation, not duplicated HTTP logic.
 
-Maintain an internal route/filter manifest beside the tools and fixtures. Snapshot tool names, input schemas and descriptions as a compatibility test; keep it out of runtime tool output. Unknown fields can pass through ordinary data, but an unknown shape in a field needed for visibility or pagination fails explicitly.
+Maintain an internal route/filter manifest beside the tools and fixtures. Snapshot tool names, input schemas and descriptions as a compatibility test; keep it out of runtime tool output. Unknown fields can pass through ordinary data, but an unknown shape in a field needed for identity validation or pagination fails explicitly.
 
 Build a minimal non-root container with a verified TLS trust store, no embedded token and graceful signal handling. Document direct loopback operation and a private tunnel deployment. The container needs no writable data volume. Do not introduce a release-publishing pipeline, distributed service infrastructure or a multi-crate workspace without a separate need.
 
@@ -260,11 +252,11 @@ These are planning IDs, not issues created by this proposal.
 |---|---|---|
 | **MCP-01** | Bootstrap the single Rust package, pinned SDK/toolchain, validated local configuration, `/mcp`, `/healthz`, shutdown and baseline protocol tests. **Commit this complete approved proposal to `docs/proposals/tines-mcp.md`. Add `.github/workflows/test.yml` with workflow name `test` and one stable job/check named `test`, triggered by pushes and pull requests.** Run formatting, locked Clippy and locked tests. No live credentials or Tines integration required. | — |
 | **MCP-02** | Shared Tines client, fixed route building, token-file/environment handling, bounded requests, deadlines, result/error envelopes and mock-server tests. Prove upstream authorization failures are tool errors, not MCP auth challenges. | MCP-01 |
-| **MCP-03** | Project, issue, workflow and label tools; shared-owner shape handling; visibility helpers; native pagination. Complete the first real-client/tunnel proof and a multi-page issue read. | MCP-02 |
+| **MCP-03** | Project, issue, workflow and label tools; shared-owner shape handling; native pagination. Complete the first real-client/tunnel proof and a multi-page issue read. | MCP-02 |
 | **MCP-04** | Context and journal tools, scope resolution, effective-context handling and representative inherited/shared fixtures. | MCP-03 |
 | **MCP-05** | Artifact metadata/version/path tools and shared digest-checked content helper, including binary and UTF-8 tests. | MCP-03 |
-| **MCP-06** | Run, dispatch and log tools; contributor-scoped response handling, visibility resolution and log retention/change tests. | MCP-03, MCP-05 |
-| **MCP-07** | Activity tool with filters, time bounds, historical/current attribution and excluded-page pagination tests. No polling worker. | MCP-03 |
+| **MCP-06** | Run, dispatch and log tools; contributor-scoped response handling and log retention/change tests. | MCP-03, MCP-05 |
+| **MCP-07** | Activity tool with filters, time bounds, historical/current attribution and native pagination tests. No polling worker. | MCP-03 |
 | **MCP-08** | Containerfile, operator README, private deployment instructions, runtime bounds and shutdown verification. | MCP-03 |
 | **MCP-09** | Cross-domain regression, independent protocol checks, complete read-only smoke test through the intended client/tunnel, and acceptance evidence. | MCP-04, MCP-06, MCP-07, MCP-08 |
 

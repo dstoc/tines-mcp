@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet},
     error::Error,
     fmt,
     future::Future,
@@ -219,7 +218,6 @@ struct ClientInner {
     web_url: Url,
     authorization: HeaderValue,
     api_token: Secret,
-    excluded_project_ids: HashSet<String>,
     tool_slots: Arc<Semaphore>,
     request_slots: Arc<Semaphore>,
     rate_limit: RateLimit,
@@ -293,7 +291,6 @@ impl TinesClient {
                 web_url: config.web_url.clone(),
                 authorization,
                 api_token: config.api_token.clone(),
-                excluded_project_ids: config.excluded_project_ids().iter().cloned().collect(),
                 tool_slots: Arc::new(Semaphore::new(MAX_TOOL_CALLS)),
                 request_slots: Arc::new(Semaphore::new(MAX_UPSTREAM_REQUESTS)),
                 rate_limit: RateLimit::new(),
@@ -330,7 +327,6 @@ impl TinesClient {
             cancellation: cancellation.clone(),
             deadline,
             _tool_permit: permit,
-            parent_issues: Mutex::new(HashMap::new()),
         };
 
         tokio::select! {
@@ -346,14 +342,9 @@ pub struct TinesToolCall {
     cancellation: CancellationToken,
     deadline: Instant,
     _tool_permit: OwnedSemaphorePermit,
-    parent_issues: Mutex<HashMap<String, Value>>,
 }
 
 impl TinesToolCall {
-    pub fn has_project_exclusions(&self) -> bool {
-        !self.inner.excluded_project_ids.is_empty()
-    }
-
     pub async fn get_json(&self, route: Route<'_>, query: &Query) -> Result<Value, TinesError> {
         self.get_json_with_status(route, query)
             .await
@@ -489,26 +480,6 @@ impl TinesToolCall {
             _ = sleep_until(self.deadline) => Err(TinesError::Timeout),
             result = future => result,
         }
-    }
-
-    /// Parent issue details may be reused only for this tool call.
-    pub fn cached_parent_issue(&self, issue_id: &str) -> Option<Value> {
-        self.parent_issues
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(issue_id)
-            .cloned()
-    }
-
-    pub fn remember_parent_issue(&self, issue_id: String, issue: Value) {
-        self.parent_issues
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(issue_id, issue);
-    }
-
-    pub fn is_project_excluded(&self, project_id: &str) -> bool {
-        self.inner.excluded_project_ids.contains(project_id)
     }
 
     pub fn browser_link(&self, path_segments: &[&str]) -> Result<String, TinesError> {
@@ -734,9 +705,6 @@ pub enum TinesError {
         field: &'static str,
         message: &'static str,
     },
-    Visibility {
-        resource: &'static str,
-    },
     NotConfigured,
     Schema {
         status: Option<u16>,
@@ -803,14 +771,6 @@ impl TinesError {
                 "validation",
                 "invalid_input".to_owned(),
                 format!("{field}: {message}"),
-                None,
-                None,
-                None,
-            ),
-            Self::Visibility { resource } => (
-                "visibility",
-                "resource_unavailable".to_owned(),
-                format!("{resource} is missing or inaccessible."),
                 None,
                 None,
                 None,
