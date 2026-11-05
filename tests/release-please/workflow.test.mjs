@@ -43,7 +43,7 @@ function evaluate(expression, values, cancelled = false, success = true) {
 function admission(values, cancelled = false) {
   return evaluate(job.if, values, cancelled).coerceString() === 'true';
 }
-function helper(values) {
+function helper(values, exercise = '') {
   const env = Object.fromEntries(Object.entries(job.env).filter(([key]) => key !== 'GH_TOKEN')
     .map(([key, expression]) => [key, evaluate(expression, values).coerceString()]));
   Object.assign(env, {GITHUB_EVENT_NAME: values.github.event_name,
@@ -56,10 +56,32 @@ spec = importlib.util.spec_from_file_location('release', 'scripts/release.py')
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 try:
-    print(json.dumps(r.dispatch(json.load(sys.stdin))))
+    selected = json.load(sys.stdin)
+    state = r.dispatch(selected)
+    if sys.argv[1]:
+        import os
+        sys.path.insert(0, 'tests/release')
+        from test_recovery import RecoveryTests
+        from test_release import visible, version
+        fixture = RecoveryTests()
+        fixture.setUp()
+        try:
+            os.environ.update(selected)
+            fixture.fresh()
+            if sys.argv[1] == 'accessible':
+                fixture.replies = visible() + visible() + visible([version(tags=['0.1.2'])])
+            fixture.accepted()
+            fixture.release.retain()
+            fixture.final()
+            state.update(publication=fixture.release.state['publication'],
+                         pushes=len(fixture.pushes()), builds=len(fixture.build_calls()),
+                         writes=fixture.mutations(), recovery=fixture.release.state['recovery'])
+        finally:
+            fixture.doCleanups()
+    print(json.dumps(state))
 except r.ReleaseError:
     sys.exit(1)
-`], {cwd: root, input: JSON.stringify(env), encoding: 'utf8'});
+`, exercise], {cwd: root, input: JSON.stringify(env), encoding: 'utf8'});
   return {result, state: result.status === 0 ? JSON.parse(result.stdout) : undefined};
 }
 
@@ -88,7 +110,7 @@ test('real workflow conditions handle skipped, failed and cancelled dependencies
   assert.equal(evaluate(workflow.jobs['release-please'].if, context('workflow_dispatch')).coerceString(), 'false');
 });
 
-test('actual environment never renews creation for old handoffs, reruns or fresh dispatches', () => {
+test('unrelated source handoffs, reruns and fresh dispatches cannot create unavailable packages', () => {
   for (const attempt of ['1', '2', '', '01']) {
     for (const event of ['push', 'workflow_dispatch']) {
       for (const version of ['0.1.0', '0.1.1', '0.1.2', '0.1.3']) {
@@ -117,7 +139,7 @@ test('missing and malformed output reaches no publishing authority', () => {
 });
 
 test('obsolete inputs cannot select creation in the actual workflow', () => {
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ['incident', 'source_sha', 'tag']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ['source_sha', 'tag']);
   assert.equal('RELEASE_MODE' in job.env, false);
   assert.equal('BOOTSTRAP_CONFIRMATION' in job.env, false);
   const manual = context('workflow_dispatch', 'skipped');
@@ -223,16 +245,33 @@ test('automatic job also requires the draft handoff; no-release and malformed ha
 });
 
 
-test('incident selector is validation only and disabled in actual workflow environment', () => {
-  assert.equal(workflow.on.workflow_dispatch.inputs.incident.required, false);
-  for (const incident of ['42010011054', 'other', 'true']) {
-    for (const attempt of ['1', '2']) {
-      const values = context('workflow_dispatch', 'skipped');
-      Object.assign(values.inputs, {incident});
-      values.github.run_attempt = attempt;
-      assert.equal(admission(values), true);
-      assert.notEqual(helper(values).result.status, 0);
+test('restored dispatch environment admits only the fixed incident first attempt', () => {
+  const source = 'bf97287109eaab863d26ed82307d31db7c3c6a71';
+  assert.equal('RELEASE_INCIDENT' in job.env, false);
+  for (const event of ['push', 'workflow_dispatch']) {
+    for (const attempt of ['1', '2', '', '01']) {
+      for (const version of ['0.1.1', '0.1.2', '0.1.3']) {
+        const values = context(event, event === 'push' ? 'success' : 'skipped',
+          {sha: source, tag_name: `v${version}`, version});
+        values.github.run_attempt = attempt;
+        if (event === 'workflow_dispatch') Object.assign(values.inputs, {source_sha: source, tag: `v${version}`});
+        const {result, state} = helper(values);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(state.creation_eligible, event === 'workflow_dispatch' && attempt === '1' && version === '0.1.2');
+      }
     }
   }
-  assert.equal(helper(context('workflow_dispatch', 'skipped')).state.creation_eligible, false);
+  const values = context('workflow_dispatch', 'skipped');
+  values.inputs.source_sha = source;
+  for (const observation of ['unavailable', 'accessible']) {
+    const {result, state} = helper(values, observation);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(state.publication, 'published');
+    assert.equal(state.pushes, 1);
+    assert.equal(state.builds, 1);
+    assert.deepEqual(state.writes.map(([method]) => method), ['POST', 'POST', 'PATCH']);
+    assert.equal(state.recovery.marker.source_sha, source);
+    assert.equal(state.recovery.marker.run_attempt, '1');
+    assert.equal(state.recovery.marker.incident_run_id, 42010011054);
+  }
 });
