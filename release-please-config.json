@@ -5,7 +5,9 @@
   "packages": {
     ".": {
       "release-type": "rust",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "draft": true,
+      "force-tag-creation": true
     }
   }
 }

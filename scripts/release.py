@@ -3,6 +3,7 @@
 
 import argparse
 import http.client
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -101,6 +102,9 @@ def dispatch(env):
         require(env.get("RELEASE_PLEASE_RESULT") == "success"
                 and env.get("RELEASE_CREATED") == "true", "Successful release-created handoff required")
         require(env.get("RELEASE_VERSION") == tag[1:], "Release Please tag/version mismatch")
+        require(env.get("RELEASE_DRAFT") == "true" and
+                re.fullmatch(r"[1-9][0-9]*", env.get("RELEASE_ID", "")),
+                "Draft release ID handoff required")
     # This allowance is not proof of absence: release authorization must establish
     # authoritative owner absence, exclusive writers, and no unresolved prior push.
     creation_eligible = (event == "push" and tag == "v0.1.1"
@@ -109,7 +113,7 @@ def dispatch(env):
                 platform="linux/amd64", creation_eligible=creation_eligible, image=f"{IMAGE}:{tag[1:]}",
                 actor=env.get("GITHUB_ACTOR"), actor_id=env.get("GITHUB_ACTOR_ID"),
                 triggering_actor=env.get("GITHUB_TRIGGERING_ACTOR"),
-                run_attempt=env.get("GITHUB_RUN_ATTEMPT"),
+                run_attempt=env.get("GITHUB_RUN_ATTEMPT"), run_id=env["GITHUB_RUN_ID"],
                 run_url=f"{SOURCE}/actions/runs/{env['GITHUB_RUN_ID']}")
 
 
@@ -304,6 +308,200 @@ def verified_identity(results, state, predicate_type):
     return valid[0]
 
 
+RELEASES = f"/repos/{REPO}/releases"
+EVIDENCE = "adapter-release-evidence-v1.json"
+MAX_EVIDENCE = 8 * 1024 * 1024
+
+
+def positive_id(value):
+    return type(value) is int and value > 0
+
+
+def content_digest(body):
+    return "sha256:" + hashlib.sha256(body).hexdigest()
+
+
+class Releases:
+    """Fixed repository API; redirects never receive the Actions token."""
+
+    def __init__(self, token):
+        require(bool(token), "Actions GITHUB_TOKEN required for draft access")
+        self.token = token
+
+    def request(self, method, path, body=None, host="api.github.com", binary=False):
+        require(host in ("api.github.com", "uploads.github.com")
+                and path.startswith(RELEASES), "Unexpected release endpoint")
+        headers = {"Authorization": f"Bearer {self.token}",
+                   "Accept": "application/octet-stream" if binary else "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "tines-mcp-release"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        connection = http.client.HTTPSConnection(host, timeout=60)
+        try:
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            data = response.read(MAX_EVIDENCE + 1)
+            require(len(data) <= MAX_EVIDENCE, "Release response too large")
+            return response.status, data, response.getheader("Link"), response.getheader("Location")
+        except (OSError, http.client.HTTPException):
+            raise ReleaseError("Release API transport failure; preserve resources and inspect outcome") from None
+        finally:
+            connection.close()
+
+    def json(self, method, path, body=None, expected=200, host="api.github.com"):
+        status, data, link, _ = self.request(method, path, body, host)
+        require(status == expected, f"Release API {method} HTTP {status}; preserve draft/tag/evidence; "
+                "inspect authority and outcome without blind retries or alternate credentials")
+        return read_json(data), link
+
+    def listing(self, route):
+        path, page, rows, ids = route + "?per_page=100&page=1", 1, [], set()
+        while True:
+            data, link = self.json("GET", path)
+            require(isinstance(data, list) and len(data) <= 100, "Malformed release/asset listing")
+            for row in data:
+                require(isinstance(row, dict) and positive_id(row.get("id"))
+                        and row["id"] not in ids, "Duplicate or malformed release/asset ID")
+                ids.add(row["id"])
+                rows.append(row)
+            if link is None:
+                return rows
+            # Validate every relation, not only next. No foreign or skipped pages.
+            relations = {}
+            for item in link.split(","):
+                match = re.fullmatch(r'\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*', item)
+                require(match is not None, "Malformed release pagination")
+                url, relation = match.groups()
+                parsed = urlsplit(url)
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                require(parsed.scheme == "https" and parsed.netloc == "api.github.com"
+                        and parsed.path == route and not parsed.fragment
+                        and set(query) == {"per_page", "page"} and query["per_page"] == ["100"]
+                        and len(query["page"]) == 1 and re.fullmatch(r"[1-9][0-9]*", query["page"][0])
+                        and relation not in relations, "Unexpected release pagination endpoint")
+                target = int(query["page"][0])
+                require((relation == "next" and target == page + 1)
+                        or (relation == "prev" and target == page - 1)
+                        or (relation == "first" and target == 1)
+                        or (relation == "last" and target >= page), "Invalid release page order")
+                relations[relation] = target
+            require(relations and (relations.get("last", page) == page or "next" in relations),
+                    "Incomplete release pagination")
+            if "next" not in relations:
+                return rows
+            require(len(data) == 100 and page < 1000, "Incomplete or excessive release pagination")
+            page += 1
+            path = route + f"?per_page=100&page={page}"
+
+    def release(self, identifier):
+        return self.json("GET", f"{RELEASES}/{identifier}")[0]
+
+    def asset(self, identifier):
+        status, body, link, location = self.request(
+            "GET", f"{RELEASES}/assets/{identifier}", binary=True)
+        require(link is None, "Unexpected binary pagination")
+        if status == 302:
+            parsed = urlsplit(location or "")
+            require(parsed.scheme == "https" and parsed.hostname is not None
+                    and parsed.hostname.endswith(".githubusercontent.com")
+                    and parsed.netloc == parsed.hostname and not parsed.fragment,
+                    "Unexpected asset download redirect")
+            connection = http.client.HTTPSConnection(parsed.hostname, timeout=60)
+            try:
+                connection.request("GET", parsed.path + ("?" + parsed.query if parsed.query else ""),
+                                   headers={"Accept": "application/octet-stream",
+                                            "User-Agent": "tines-mcp-release"})
+                response = connection.getresponse()
+                status, body = response.status, response.read(MAX_EVIDENCE + 1)
+            except (OSError, http.client.HTTPException):
+                raise ReleaseError("Asset download transport failure; preserve existing evidence") from None
+            finally:
+                connection.close()
+        require(status == 200 and 0 < len(body) <= MAX_EVIDENCE, "Asset download failed or exceeded bound")
+        return body
+
+    def evidence(self, identifier):
+        rows = self.listing(f"{RELEASES}/{identifier}/assets")
+        matches = [row for row in rows if row.get("name") == EVIDENCE]
+        require(len(matches) <= 1, "Duplicate durable evidence assets")
+        if not matches:
+            return None
+        row = matches[0]
+        require(row.get("state") == "uploaded" and type(row.get("size")) is int
+                and 0 < row["size"] <= MAX_EVIDENCE and row.get("content_type") == "application/json",
+                "Incomplete or invalid durable evidence asset; never replace it")
+        body = self.asset(row["id"])
+        require(len(body) == row["size"] and row.get("digest") == content_digest(body),
+                "Durable evidence size/digest mismatch")
+        return row, body
+
+
+def release_identity(row, state):
+    require(isinstance(row, dict) and positive_id(row.get("id"))
+            and row.get("tag_name") == state["tag"]
+            and row.get("target_commitish") == state["source_sha"]
+            and row.get("prerelease") is False and type(row.get("draft")) is bool
+            and type(row.get("immutable")) is bool, "Release identity/source mismatch")
+    require((row["draft"] and row.get("published_at") is None and not row["immutable"])
+            or (not row["draft"] and isinstance(row.get("published_at"), str)
+                and bool(row["published_at"])), "Invalid release publication state")
+    if "release_id" in state:
+        require(row["id"] == state["release_id"], "Pinned release ID changed")
+    return row
+
+
+SNAPSHOT_FIELDS = ("tag", "version", "source_sha", "platform", "package_id", "digest", "pinned_image",
+                   "original_workflow_sha", "workflow_sha", "run_url", "run_id", "run_attempt", "actor", "actor_id",
+                   "triggering_actor", "creation_eligible", "package_observation", "prepush_package_observation")
+
+
+def evidence_document(state, directory):
+    snapshot = {key: state[key] for key in SNAPSHOT_FIELDS if key in state}
+    return dict(schema_version=1, repository=SOURCE, release_id=state["release_id"],
+                acceptance="passed", runtime="passed", snapshot=snapshot,
+                provenance=read_json((directory / "verified-provenance.json").read_bytes()),
+                identity=read_json((directory / "verified-identity.json").read_bytes()))
+
+
+def validate_evidence(body, state, fresh=True):
+    value = read_json(body)
+    require(isinstance(value, dict) and type(value.get("schema_version")) is int
+            and value["schema_version"] == 1 and value.get("repository") == SOURCE
+            and set(value) == {"schema_version", "repository", "release_id", "acceptance", "runtime",
+                               "snapshot", "provenance", "identity"}
+            and positive_id(value.get("release_id")) and value["release_id"] == state["release_id"]
+            and value.get("acceptance") == "passed" and value.get("runtime") == "passed",
+            "Invalid durable acceptance evidence")
+    snapshot = value.get("snapshot")
+    require(isinstance(snapshot, dict) and set(snapshot) <= set(SNAPSHOT_FIELDS)
+            and all(snapshot.get(key) == state[key] for key in ("tag", "version", "source_sha", "platform"))
+            and positive_id(snapshot.get("package_id"))
+            and isinstance(snapshot.get("digest"), str) and re.fullmatch(DIGEST, snapshot["digest"])
+            and snapshot.get("pinned_image") == f"{IMAGE}@{snapshot['digest']}"
+            and all(isinstance(snapshot.get(key), str) and re.fullmatch(SHA, snapshot[key])
+                    for key in ("workflow_sha", "original_workflow_sha"))
+            and isinstance(snapshot.get("run_id"), str) and re.fullmatch(r"[1-9][0-9]*", snapshot["run_id"])
+            and snapshot.get("run_url") == f"{SOURCE}/actions/runs/{snapshot['run_id']}"
+            and isinstance(snapshot.get("run_url"), str)
+            and re.fullmatch(re.escape(SOURCE) + r"/actions/runs/[1-9][0-9]*", snapshot["run_url"])
+            and isinstance(snapshot.get("run_attempt"), str)
+            and re.fullmatch(r"[1-9][0-9]*", snapshot["run_attempt"])
+            and all(isinstance(snapshot.get(key), str) and bool(snapshot[key])
+                    for key in ("actor", "actor_id", "triggering_actor"))
+            and type(snapshot.get("creation_eligible")) is bool
+            and snapshot.get("package_observation") in ("accessible", "unavailable")
+            and snapshot.get("prepush_package_observation", "accessible") in ("accessible", "unavailable"),
+            "Durable evidence snapshot mismatch")
+    for field, predicate in (("provenance", PROVENANCE), ("identity", PREDICATE)):
+        require(verified_identity(value.get(field), snapshot, predicate) == snapshot["original_workflow_sha"],
+                "Durable evidence original signer mismatch")
+    if fresh:
+        require(all(snapshot[key] == state[key] for key in
+                    ("package_id", "digest", "pinned_image", "original_workflow_sha")),
+                "Durable evidence conflicts with fresh image acceptance")
+    return value
+
+
 class Release:
     def __init__(self, workflow, source, record):
         self.workflow, self.source, self.record = Path(workflow).resolve(), Path(source).resolve(), Path(record)
@@ -317,13 +515,48 @@ class Release:
     def resolve(self):
         self.save(**dispatch(os.environ))
         resolve(self.workflow, self.state)
+        api = Releases(os.environ.get("GH_TOKEN", ""))
+        rows = api.listing(RELEASES)
+        matches = [row for row in rows if row.get("tag_name") == self.state["tag"]]
+        require(len(matches) == 1, "Missing or duplicate release; never recreate it")
+        row = release_identity(matches[0], self.state)
+        if os.environ["GITHUB_EVENT_NAME"] == "push":
+            require(row["id"] == int(os.environ["RELEASE_ID"]) and row["draft"],
+                    "Automatic handoff must select the exact draft")
+        self.save(release_id=row["id"], release_draft=row["draft"], immutable=row["immutable"])
+        self.check_release()
+        asset = api.evidence(row["id"])
+        require(row["draft"] or asset is not None,
+                "Published legacy release has no evidence; no backfill authorized")
+        if asset is not None:
+            validate_evidence(asset[1], self.state, fresh=False)
+            self.pin_evidence(*asset)
         output(source_sha=self.state["source_sha"])
+
+    def check_release(self):
+        row = release_identity(Releases(os.environ.get("GH_TOKEN", "")).release(self.state["release_id"]), self.state)
+        require(row["draft"] == self.state["release_draft"], "Release publication state changed externally")
+        return row
+
+    def pin_evidence(self, row, body):
+        (self.record.parent / EVIDENCE).write_bytes(body)
+        self.save(evidence_id=row["id"], evidence_size=len(body), evidence_digest=content_digest(body))
+
+    def check_evidence(self):
+        asset = Releases(os.environ.get("GH_TOKEN", "")).evidence(self.state["release_id"])
+        require(asset is not None, "Required durable evidence missing")
+        row, body = asset
+        require(row["id"] == self.state["evidence_id"] and len(body) == self.state["evidence_size"]
+                and content_digest(body) == self.state["evidence_digest"], "Pinned durable evidence changed")
+        validate_evidence(body, self.state)
+        return asset
 
     def publish(self):
         current = dispatch(os.environ)
         require(current == {k: self.state[k] for k in current}, "Dispatch identity changed")
         require(not self.state.get("push_attempted") and not self.state.get("digest"),
                 "This record already selected or attempted publication; use a fresh recovery dispatch")
+        self.check_release()
         self.save(operation="source_and_tool_checks")
         source_version(self.source, self.state)
         resolve(self.workflow, self.state)
@@ -341,9 +574,15 @@ class Release:
         self.save(package_id=package_id,
                   package_observation="unavailable" if package_id is None else "accessible")
         if digest:
+            if self.state.get("evidence_id"):
+                expected = read_json((self.record.parent / EVIDENCE).read_bytes())["snapshot"]
+                require(expected["package_id"] == package_id and expected["digest"] == digest,
+                        "Existing evidence conflicts with selected image")
             self.save(digest=digest, pinned_image=f"{IMAGE}@{digest}", reused=True, stage="digest_observed")
             output(new_image="false", digest=digest)
             return
+        require(self.state["release_draft"] and not self.state.get("evidence_id"),
+                "Published release or retained evidence requires an existing image; no build authorized")
         build = ["docker", "build", "--platform", "linux/amd64", "--file", str(self.source / "Containerfile"),
                  "--tag", self.state["image"]]
         for key, value in labels(self.state).items():
@@ -354,6 +593,7 @@ class Release:
         image_id = inspect_image(self.state["image"], self.state)
         smoke(self.workflow, image_id)
         self.save(operation="prepush_recheck")
+        self.check_release()
         remote_tag(self.workflow, self.state)
         before_id, before_digest = registry.lookup(self.state["version"], package_id is None)
         self.save(prepush_package_observation="unavailable" if before_id is None else "accessible")
@@ -404,7 +644,60 @@ class Release:
         package_id, digest = Registry(os.environ.get("GH_TOKEN", "")).lookup(self.state["version"])
         require(package_id == self.state["package_id"] and digest == self.state["digest"],
                 "Completion package identity/digest conflict")
+        self.check_release()
         self.save(stage="public_runtime_acceptance_complete", validation="passed", operation="complete")
+
+    def retain(self):
+        require(self.state.get("validation") == "passed"
+                and self.state.get("stage") == "public_runtime_acceptance_complete", "Image acceptance required")
+        self.check_release()
+        remote_tag(self.workflow, self.state)
+        api = Releases(os.environ.get("GH_TOKEN", ""))
+        asset = self.check_evidence() if self.state.get("evidence_id") else api.evidence(self.state["release_id"])
+        if asset is None:
+            require(self.state["release_draft"], "Published release evidence cannot be backfilled")
+            require(not self.state.get("evidence_upload_attempted"),
+                    "Evidence upload outcome uncertain; use fresh discovery without replacement")
+            body = (json.dumps(evidence_document(self.state, self.record.parent), indent=2) + "\n").encode()
+            require(len(body) <= MAX_EVIDENCE, "Durable evidence too large")
+            validate_evidence(body, self.state)
+            self.check_release()
+            remote_tag(self.workflow, self.state)
+            self.save(operation="evidence_upload", evidence_upload_attempted=True)
+            api.json("POST", f"{RELEASES}/{self.state['release_id']}/assets?name={EVIDENCE}",
+                     body, expected=201, host="uploads.github.com")
+            asset = api.evidence(self.state["release_id"])
+            require(asset is not None and asset[1] == body, "Uploaded evidence readback mismatch")
+        validate_evidence(asset[1], self.state)
+        if not self.state["release_draft"]:
+            self.check_evidence()
+        self.pin_evidence(*asset)
+        self.save(evidence_retained=True, operation="evidence_retained")
+
+    def finalize(self):
+        require(self.state.get("validation") == "passed" and self.state.get("evidence_retained") is True
+                and self.state.get("stage") == "public_runtime_acceptance_complete", "Acceptance/evidence required")
+        self.check_release()
+        remote_tag(self.workflow, self.state)
+        package_id, digest = Registry(os.environ.get("GH_TOKEN", "")).lookup(self.state["version"])
+        require(package_id == self.state["package_id"] and digest == self.state["digest"],
+                "Publication package identity/digest conflict")
+        self.check_evidence()
+        if not self.state["release_draft"]:
+            self.save(publication="already_published_read_only", operation="complete")
+            return
+        require(not self.state.get("publication_attempted"), "Publication outcome uncertain; use fresh discovery")
+        self.check_release()
+        remote_tag(self.workflow, self.state)
+        self.save(publication_attempted=True, publication="outcome_uncertain", operation="github_publication")
+        api = Releases(os.environ.get("GH_TOKEN", ""))
+        row, _ = api.json("PATCH", f"{RELEASES}/{self.state['release_id']}", b'{"draft":false}')
+        row = release_identity(row, self.state)
+        require(not row["draft"], "Publication response remains a draft")
+        observed = release_identity(api.release(self.state["release_id"]), self.state)
+        require(not observed["draft"] and observed["immutable"] == row["immutable"], "Publication readback mismatch")
+        remote_tag(self.workflow, self.state)
+        self.save(release_draft=False, immutable=observed["immutable"], publication="published", operation="complete")
 
     def report(self):
         if os.environ.get("RELEASE_JOB_STATUS") != "success":
@@ -422,7 +715,7 @@ class Release:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("resolve", "publish", "accept", "report"))
+    parser.add_argument("phase", choices=("resolve", "publish", "accept", "retain", "finalize", "report"))
     parser.add_argument("--workflow", required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--record", required=True)

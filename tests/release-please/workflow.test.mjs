@@ -25,13 +25,16 @@ const job = workflow.jobs.release;
 const sha = 'a'.repeat(40);
 const context = (event = 'push', result = 'success', outputs = {}) => ({
   github: {event_name: event, repository: 'dstoc/tines-mcp', ref: 'refs/heads/main', run_attempt: '1'},
-  needs: {'release-please': {result, outputs: {release_created: 'true', tag_name: 'v0.1.1',
+  needs: {'release-please': {result, outputs: {release_created: 'true', id: '41', draft: 'true', tag_name: 'v0.1.1',
     version: '0.1.1', sha, ...outputs}}},
   inputs: event === 'workflow_dispatch' ? {tag: 'v0.1.1', source_sha: sha} : {},
 });
-function evaluate(expression, values, cancelled = false) {
+function evaluate(expression, values, cancelled = false, success = true) {
   const functions = [{name: 'cancelled', minArgs: 0, maxArgs: 0,
-    call: () => new data.BooleanData(cancelled)}];
+    call: () => new data.BooleanData(cancelled)},
+    {name: 'success', minArgs: 0, maxArgs: 0, call: () => new data.BooleanData(success)},
+    {name: 'always', minArgs: 0, maxArgs: 0, call: () => new data.BooleanData(true)},
+    {name: 'failure', minArgs: 0, maxArgs: 0, call: () => new data.BooleanData(!success && !cancelled)}];
   const tokens = new Lexer(expression.replace(/^\$\{\{\s*|\s*\}\}$/g, '')).lex().tokens;
   const ast = new Parser(tokens, Object.keys(values), functions).parse();
   return new Evaluator(ast, JSON.parse(JSON.stringify(values), data.reviver),
@@ -107,7 +110,7 @@ test('missing and malformed output reaches no publishing authority', () => {
   for (const outputs of [{sha: ''}, {sha: 'main'}, {sha: 'A'.repeat(40)},
     {tag_name: ''}, {tag_name: 'v0.1.1-rc.1'}, {tag_name: 'v00.1.1'},
     {version: ''}, {version: '0.2.0'}, {version: '0.1.1\n'},
-    {release_created: 'TRUE'}, {tag_name: '$(touch unexpected)'}]) {
+    {release_created: 'TRUE'}, {id: ''}, {id: '0'}, {id: '41x'}, {draft: ''}, {draft: 'false'}, {draft: 'TRUE'}, {tag_name: '$(touch unexpected)'}]) {
     assert.notEqual(helper(context('push', 'success', outputs)).result.status, 0);
   }
   assert.notEqual(helper(context('push', 'failure')).result.status, 0);
@@ -132,10 +135,89 @@ test('PR write capabilities remain isolated from publisher and default permissio
   assert.deepEqual(workflow.jobs['release-please'].permissions,
     {contents: 'write', issues: 'write', 'pull-requests': 'write'});
   assert.deepEqual(job.permissions,
-    {contents: 'read', packages: 'write', attestations: 'write', 'id-token': 'write'});
+    {contents: 'write', packages: 'write', attestations: 'write', 'id-token': 'write'});
   assert.deepEqual(workflow.on.push, {branches: ['main']});
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
-  for (const key of ['release_created', 'tag_name', 'version', 'sha']) {
+  for (const key of ['release_created', 'tag_name', 'version', 'sha', 'id', 'draft']) {
     assert.equal(workflow.jobs['release-please'].outputs[key], `\${{ steps.release.outputs.${key} }}`);
   }
+});
+
+
+// Evaluate the real step predicates, including Actions' implicit success() rule.
+function executeSteps({newImage = true, failAt = -1, cancelAt = -1} = {}) {
+  const values = context();
+  values.steps = {image: {outputs: {new_image: String(newImage)}}};
+  values.job = {status: 'success'};
+  let success = true, cancelled = false;
+  const executed = [];
+  for (const [index, step] of job.steps.entries()) {
+    if (cancelAt === index) { cancelled = true; success = false; }
+    let condition = step.if || 'success()';
+    if (!/\b(success|failure|always|cancelled)\s*\(/.test(condition)) {
+      condition = `success() && (${condition})`;
+    }
+    if (evaluate(condition, values, cancelled, success).coerceString() !== 'true') continue;
+    executed.push(index);
+    if (index === failAt) success = false;
+    values.job.status = cancelled ? 'cancelled' : success ? 'success' : 'failure';
+    if (step.id) values.steps[step.id] = {...values.steps[step.id],
+      outcome: index === failAt ? 'failure' : 'success', conclusion: index === failAt ? 'failure' : 'success'};
+  }
+  return executed;
+}
+const phaseIndex = phase => job.steps.findIndex(step => step.run?.includes(`release.py ${phase} `));
+
+test('actual workflow enforces acceptance, durable readback and required Actions upload before publication', () => {
+  const phases = ['resolve', 'publish', 'accept', 'retain', 'finalize', 'report'].map(phaseIndex);
+  assert.ok(phases.every(i => i >= 0));
+  assert.deepEqual([...phases].sort((a, b) => a - b), phases);
+  const attest = job.steps.map((step, i) => step.uses?.startsWith('actions/attest@') ? i : -1).filter(i => i >= 0);
+  assert.equal(attest.length, 2);
+  assert.ok(attest.every(i => i > phaseIndex('publish') && i < phaseIndex('accept')));
+  const required = job.steps.findIndex(step => step.id === 'retention');
+  assert.ok(required > phaseIndex('retain') && required < phaseIndex('finalize'));
+  assert.match(job.steps[required].uses, /^actions\/upload-artifact@[a-f0-9]{40}$/);
+  assert.equal(job.steps[required].with['if-no-files-found'], 'error');
+  assert.equal(job.steps[required].with.path, 'release/');
+  assert.equal(job.steps[required].if, undefined);
+  assert.equal(job.steps[phaseIndex('finalize')].if, undefined);
+  for (const newImage of [true, false]) {
+    const executed = executeSteps({newImage});
+    assert.ok(executed.includes(phaseIndex('finalize')));
+    assert.equal(attest.every(i => executed.includes(i)), newImage);
+    assert.equal(executed.includes(required), true);
+  }
+});
+
+test('every pre-publication failure/cancellation blocks final PATCH despite always diagnostics', () => {
+  const publication = phaseIndex('finalize');
+  const report = phaseIndex('report');
+  const diagnostics = job.steps.findIndex(step => step.name === 'Retain attempt diagnostics');
+  const cleanup = job.steps.length - 1;
+  for (const newImage of [true, false]) {
+    const normal = executeSteps({newImage});
+    for (let index = 0; index <= publication; index++) {
+      for (const kind of ['failure', 'cancellation']) {
+        if (kind === 'failure' && !normal.includes(index)) continue;
+        const executed = executeSteps({newImage,
+          ...(kind === 'failure' ? {failAt: index} : {cancelAt: index})});
+        if (index < publication || kind === 'cancellation') assert.equal(executed.includes(publication), false);
+        assert.ok(executed.includes(report));
+        assert.ok(executed.includes(diagnostics));
+        assert.ok(executed.includes(cleanup));
+        assert.ok(job.steps[report].run.includes('release.py report '));
+        // No publication step follows an always() diagnostic or cleanup path.
+        assert.ok(executed.filter(i => i > report).every(i => !job.steps[i].run?.includes('release.py finalize ')));
+      }
+    }
+  }
+});
+
+test('automatic job also requires the draft handoff; no-release and malformed handoffs confer no authority', () => {
+  for (const draft of ['', 'false']) {
+    assert.equal(admission(context('push', 'success', {draft})), false);
+  }
+  // Actions equality ignores case; the helper supplies exact-string validation.
+  assert.notEqual(helper(context('push', 'success', {draft: 'TRUE'})).result.status, 0);
 });
