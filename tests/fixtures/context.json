@@ -1,0 +1,573 @@
+{
+  "source": "Synthetic native-shaped fixtures based on af6cb25febf1b45d7eff32251f78fcf6355aed4a packages/shared/src/types.ts, apps/web/src/lib/server/api/context.ts and permissions.ts; not live permission verification.",
+  "successes": [
+    {
+      "tool": "create_context",
+      "arguments": {
+        "kind": "prompt",
+        "name": "notes",
+        "body": ""
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/context",
+        "segments": [
+          "context"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "kind": "prompt",
+            "name": "notes",
+            "body": ""
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 1,
+            "updated_at": 42,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": null,
+              "label_id": null,
+              "label": "global",
+              "project_name": null,
+              "workflow_id": null,
+              "workflow_name": null,
+              "workflow_state_name": null,
+              "issue_ref": null,
+              "label_name": null,
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "prompt",
+            "name": "notes",
+            "body": ""
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "prompt",
+        "version": 1,
+        "updated_at": 42
+      }
+    },
+    {
+      "tool": "create_context",
+      "arguments": {
+        "kind": "skill",
+        "name": "review",
+        "issue_id": "iss_existing",
+        "files": [
+          {
+            "path": "SKILL.md",
+            "content": "  $VALUE `literal` 🦀  "
+          }
+        ]
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/context",
+        "segments": [
+          "context"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "kind": "skill",
+            "name": "review",
+            "issue_id": "iss_existing",
+            "files": [
+              {
+                "path": "SKILL.md",
+                "content": "  $VALUE `literal` 🦀  "
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 1,
+            "updated_at": 42,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": "iss_existing",
+              "label_id": null,
+              "label": "example scope",
+              "project_name": null,
+              "workflow_id": null,
+              "workflow_name": null,
+              "workflow_state_name": null,
+              "issue_ref": "example/1",
+              "label_name": null,
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "skill",
+            "name": "review",
+            "files": [
+              {
+                "path": "SKILL.md",
+                "content": "  $VALUE `literal` 🦀  "
+              }
+            ],
+            "file_count": 1
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "skill",
+        "version": 1,
+        "updated_at": 42
+      }
+    },
+    {
+      "tool": "create_context",
+      "arguments": {
+        "kind": "repo",
+        "name": "source",
+        "project_id": "prj_existing",
+        "workflow_state_id": "wfs_existing",
+        "label_id": "lbl_existing",
+        "repo_url": "https://example.test/source.git",
+        "repo_branch": null,
+        "repo_dir": "source"
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/context",
+        "segments": [
+          "context"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "kind": "repo",
+            "name": "source",
+            "project_id": "prj_existing",
+            "workflow_state_id": "wfs_existing",
+            "label_id": "lbl_existing",
+            "repo_url": "https://example.test/source.git",
+            "repo_branch": null,
+            "repo_dir": "source"
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 1,
+            "updated_at": 42,
+            "description": "",
+            "scope": {
+              "project_id": "prj_existing",
+              "workflow_state_id": "wfs_existing",
+              "issue_id": null,
+              "label_id": "lbl_existing",
+              "label": "example scope",
+              "project_name": "example",
+              "workflow_id": "wf_existing",
+              "workflow_name": "Implementation",
+              "workflow_state_name": "Implement",
+              "issue_ref": null,
+              "label_name": "P2",
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "repo",
+            "name": "source",
+            "repo_url": "https://example.test/source.git",
+            "repo_branch": null,
+            "repo_dir": "source"
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "repo",
+        "version": 1,
+        "updated_at": 42
+      }
+    },
+    {
+      "tool": "create_context",
+      "arguments": {
+        "kind": "env",
+        "name": "SERVICE_TOKEN",
+        "value": "fixture-secret-value",
+        "secret": true,
+        "hint": null
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/context",
+        "segments": [
+          "context"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "kind": "env",
+            "name": "SERVICE_TOKEN",
+            "value": "fixture-secret-value",
+            "secret": true,
+            "hint": null
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 1,
+            "updated_at": 42,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": null,
+              "label_id": null,
+              "label": "global",
+              "project_name": null,
+              "workflow_id": null,
+              "workflow_name": null,
+              "workflow_state_name": null,
+              "issue_ref": null,
+              "label_name": null,
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "env",
+            "name": "SERVICE_TOKEN",
+            "secret": true,
+            "value_set": true,
+            "hint": null
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "env",
+        "version": 1,
+        "updated_at": 42
+      }
+    },
+    {
+      "tool": "edit_context",
+      "arguments": {
+        "context_id": "ctx_raw",
+        "files": [
+          {
+            "path": "SKILL.md",
+            "content": "replacement"
+          }
+        ],
+        "expected_version": 1
+      },
+      "plan": {
+        "method": "PATCH",
+        "template": "/context/{context_id}",
+        "segments": [
+          "context",
+          "ctx_raw"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "files": [
+              {
+                "path": "SKILL.md",
+                "content": "replacement"
+              }
+            ],
+            "expected_version": 1
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 2,
+            "updated_at": 43,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": null,
+              "label_id": null,
+              "label": "global",
+              "project_name": null,
+              "workflow_id": null,
+              "workflow_name": null,
+              "workflow_state_name": null,
+              "issue_ref": null,
+              "label_name": null,
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "skill",
+            "name": "review",
+            "files": [
+              {
+                "path": "SKILL.md",
+                "content": "replacement"
+              }
+            ],
+            "file_count": 1
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "skill",
+        "version": 2,
+        "updated_at": 43
+      }
+    },
+    {
+      "tool": "edit_context",
+      "arguments": {
+        "context_id": "ctx_raw",
+        "issue_id": "iss_existing",
+        "project_id": null,
+        "repo_branch": "",
+        "repo_dir": null,
+        "description": "",
+        "expected_version": 1
+      },
+      "plan": {
+        "method": "PATCH",
+        "template": "/context/{context_id}",
+        "segments": [
+          "context",
+          "ctx_raw"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "issue_id": "iss_existing",
+            "project_id": null,
+            "repo_branch": "",
+            "repo_dir": null,
+            "description": "",
+            "expected_version": 1
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 2,
+            "updated_at": 43,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": "iss_existing",
+              "label_id": null,
+              "label": "example scope",
+              "project_name": null,
+              "workflow_id": null,
+              "workflow_name": null,
+              "workflow_state_name": null,
+              "issue_ref": "example/1",
+              "label_name": null,
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "repo",
+            "name": "source",
+            "repo_branch": null,
+            "repo_dir": null,
+            "redacted": [
+              "workspace"
+            ],
+            "future_native_field": {
+              "permission": "native"
+            }
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "repo",
+        "version": 2,
+        "updated_at": 43
+      }
+    },
+    {
+      "tool": "append_context",
+      "arguments": {
+        "context_id": "ctx_raw",
+        "text": "  next 🦀  ",
+        "expected_version": 1
+      },
+      "plan": {
+        "method": "POST",
+        "template": "/context/{context_id}/append",
+        "segments": [
+          "context",
+          "ctx_raw",
+          "append"
+        ],
+        "query": [],
+        "body": {
+          "kind": "json",
+          "value": {
+            "text": "  next 🦀  ",
+            "expected_version": 1
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "kind": "json",
+          "value": {
+            "id": "ctx_raw",
+            "version": 2,
+            "updated_at": 43,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": null,
+              "label_id": null,
+              "label": "global",
+              "project_name": null,
+              "workflow_id": null,
+              "workflow_name": null,
+              "workflow_state_name": null,
+              "issue_ref": null,
+              "label_name": null,
+              "label_color": null
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "prompt",
+            "name": "notes",
+            "body": "old\n\nnext 🦀"
+          }
+        }
+      },
+      "receipt": {
+        "id": "ctx_raw",
+        "kind": "prompt",
+        "version": 2,
+        "updated_at": 43
+      }
+    }
+  ],
+  "errors": [
+    {
+      "tool": "edit_context",
+      "status": 409,
+      "error": {
+        "code": "version_conflict",
+        "message": "The item changed to version 3 while this write was in flight; re-read and retry",
+        "details": {
+          "current": {
+            "id": "ctx_raw",
+            "version": 3,
+            "updated_at": 42,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": null,
+              "label_id": null,
+              "label": "global"
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "env",
+            "name": "SERVICE_TOKEN",
+            "secret": true,
+            "value_set": true,
+            "hint": null
+          }
+        }
+      }
+    },
+    {
+      "tool": "append_context",
+      "status": 409,
+      "error": {
+        "code": "version_conflict",
+        "message": "The item changed to version 3 while this write was in flight; re-read and retry",
+        "details": {
+          "current": {
+            "id": "ctx_raw",
+            "version": 3,
+            "updated_at": 42,
+            "description": "",
+            "scope": {
+              "project_id": null,
+              "workflow_state_id": null,
+              "issue_id": null,
+              "label_id": null,
+              "label": "global"
+            },
+            "position": 0,
+            "created_at": 41,
+            "kind": "prompt",
+            "name": "notes",
+            "body": "changed"
+          }
+        }
+      }
+    },
+    {
+      "tool": "edit_context",
+      "status": 403,
+      "error": {
+        "code": "insufficient_permissions",
+        "message": "The API key lacks required authority",
+        "details": {
+          "operation": "context.update",
+          "domain": "workspace",
+          "access": "write"
+        }
+      }
+    }
+  ]
+}
