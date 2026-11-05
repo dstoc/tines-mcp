@@ -8,9 +8,19 @@ earlier deliveries accepted under those issues' revised testing directions.
 remain incomplete.** No inspected source, SDK result, process health check or
 ignored test is an intended OpenAI client/tunnel pass.
 
+On November 5, 2026, Douglas approved separating code landing from live
+deployment/client validation in
+[tines-mcp/29](https://tines.tbuckley.dev/issues/prj_yruhXD41qH2onQN2/29).
+The code audit, documentation and automated checks can proceed through normal
+CI and independent review. Deployment/client acceptance and residual native
+lifecycle evidence remain open in
+[tines-mcp/34](https://tines.tbuckley.dev/issues/prj_yruhXD41qH2onQN2/34)
+and do not block this code landing. This scoped decision is not a GitHub
+approval, a live pass or a waiver of unrelated acceptance requirements.
+
 ## Revisions and tested paths
 
-Recorded on November 5, 2026:
+Original implementation-run observations, recorded on November 5, 2026:
 
 | Item | Observation |
 | --- | --- |
@@ -22,7 +32,7 @@ Recorded on November 5, 2026:
 | Intended OpenAI client/version and tunnel | **Not supplied and not tested.** No existing acceptance record for that connection was supplied. |
 | Deployment listener, allowlists, token authority and request budget | **Not observed.** Repository defaults/examples were checked against code and automated tests; they are not deployed settings. |
 
-No native mutation was performed for this completion gate. The prior artifact
+No native mutation was performed for this code acceptance work. The prior artifact
 SDK record remains a separate historical result, not a rerun or a substitute for
 the intended client.
 
@@ -43,6 +53,12 @@ scenario and two context/recovery native scenarios. They remain compiled and
 unrun. Final normal checks passed: formatting, clippy with warnings denied, and
 **241 tests passed, 3 ignored**. The combined command including `full_surface`
 passed **35 tests, 3 ignored**. No container runtime was available in this run.
+
+After the owner's scoped decision, the documentation update reran formatting,
+clippy, the full Rust suite (**241 passed, 3 ignored**), the combined command
+(**35 passed, 3 ignored**) and release-helper tests (**44 passed**). Local links
+in the README, inventory and this record resolved. This rerun used local
+fixtures; no container runtime was available and no live acceptance was added.
 
 The final discovery fixture pins 41 implemented tools: 25 reads and 16 mutations.
 It includes descriptions, strict input schemas, all four annotations and the
@@ -122,6 +138,10 @@ upload, URL import or attachment-handle resolver.
 
 ## Earlier evidence and remaining work
 
+The remaining deployment/client and native lifecycle work below is tracked in
+[tines-mcp/34](https://tines.tbuckley.dev/issues/prj_yruhXD41qH2onQN2/34).
+It remains unverified and is separate from review and landing of this change.
+
 The following records retain their own source/CI evidence and limitations:
 
 - [Issue/workflow](issue-workflow.md): HTTP forwarding and request counts;
@@ -157,7 +177,8 @@ that actual client and:
    mutation, witness read and later status observation separate. Do not infer
    launch or stopped execution from a successful API receipt.
 
-No release or intended-client acceptance is claimed until the required evidence
-is supplied. If access is unavailable, the requirement owner must record a
-scoped decision. This document grants no waiver and does not authorize production
-recovery mutations, credential changes or a release publication.
+No live deployment or intended-client acceptance is claimed. The owner's scoped
+decision permits code landing while the evidence above remains open in
+tines-mcp/34. The original domain reports and unrelated acceptance requirements
+remain in effect. This document does not authorize production recovery mutations,
+credential changes or a release publication.

@@ -235,7 +235,7 @@ Run all three integration gates together without live credentials:
 cargo test --locked --test issue_workflow_acceptance --test artifact_acceptance --test context_recovery_acceptance --test full_surface
 ```
 
-Ignored native scenarios remain unrun. These suites do not verify the intended client/tunnel path. See the [acceptance record](docs/acceptance/full-surface.md) for evidence and remaining operator checks.
+Ignored native scenarios remain unrun. These suites do not verify the intended client/tunnel path. Live deployment/client acceptance and residual native lifecycle evidence remain open in [tines-mcp/34](https://tines.tbuckley.dev/issues/prj_yruhXD41qH2onQN2/34). The owner approved code landing through normal CI and independent review while that work remains open. See the [acceptance record](docs/acceptance/full-surface.md) for the scoped decision, evidence and remaining operator checks.
 
 Run the same checks as CI:
 
