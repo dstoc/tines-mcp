@@ -1,5 +1,7 @@
 # Proposal: Read-only Tines MCP adapter
 
+This document records the initial read-only design. The approved [issue-comment extension](issue-comments.md) adds one append tool using the configured token.
+
 ## Motivation
 
 Provide direct, useful access to Tines from MCP clients without routing reads through another agent or requiring clients to understand its REST API. Clients should be able to explore a backlog, understand dependencies and decisions, inspect execution progress, and read the evidence produced by a run.

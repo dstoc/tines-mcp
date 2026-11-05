@@ -227,6 +227,7 @@ async fn legacy_initialization_and_tool_discovery_are_stateless() {
             "get_run",
             "get_run_log",
             "explain_dispatch",
+            "append_issue_comment",
         ]
     );
 }
@@ -468,7 +469,7 @@ async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() 
         .list_all_tools()
         .await
         .expect("SDK client should discover tools");
-    assert_eq!(tools.len(), 19);
+    assert_eq!(tools.len(), 20);
     assert!(
         tools
             .iter()
@@ -478,7 +479,7 @@ async fn pinned_sdk_client_negotiates_discovers_tools_and_decodes_tool_errors() 
         tool.annotations
             .as_ref()
             .and_then(|annotations| annotations.read_only_hint)
-            == Some(true)
+            == Some(tool.name.as_ref() != "append_issue_comment")
     }));
 
     let success = client

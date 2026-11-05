@@ -16,7 +16,9 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::content::{self, MAX_CONTENT_CHUNK_BYTES, MAX_CONTENT_SOURCE_BYTES};
-use crate::tines::{Query, ResultEnvelope, Route, TinesClient, TinesError, TinesToolCall};
+use crate::tines::{
+    Query, ResultEnvelope, Route, TinesClient, TinesError, TinesToolCall, WriteAttempt,
+};
 
 const MAX_PAGE_SIZE: u32 = 100;
 const MAX_CURSOR_CHARS: usize = 4096;
@@ -198,9 +200,15 @@ impl ReadTools {
             tool::<ExplainDispatchArgs>(
                 "explain_dispatch",
                 "Read Tines' dispatch eligibility explanation for one issue. This preserves readiness, routing, and runner checks as supplied; it does not dispatch a run or establish issue acceptance.",
-                output_schema,
+                output_schema.clone(),
             )
             .with_annotations(annotations()),
+            tool::<AppendIssueCommentArgs>(
+                "append_issue_comment",
+                "Append a comment to an existing issue by immutable issue_id using the configured Tines token. Repeating the call can create another comment. If the outcome is uncertain, inspect the issue before deciding whether to append again.",
+                output_schema,
+            )
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(false).open_world(true)),
         ]
     }
 
@@ -222,6 +230,54 @@ impl ReadTools {
                 .with_omissions(result.omissions)
                 .to_mcp_result(),
             Err(error) => error.to_mcp_result(),
+        }
+    }
+
+    async fn append_issue_comment(
+        &self,
+        args: AppendIssueCommentArgs,
+        cancellation: CancellationToken,
+    ) -> rmcp::model::CallToolResult {
+        let write = WriteAttempt::default();
+        if let Err(error) = args.validate() {
+            return write.error(error).to_mcp_result();
+        }
+        let Some(tines) = &self.tines else {
+            return write.error(TinesError::NotConfigured).to_mcp_result();
+        };
+        let attempt = write.clone();
+        let result = tines
+            .run_tool(cancellation, move |call| async move {
+                let links = issue_child_link(&call, &args.issue_id)
+                    .await?
+                    .into_iter()
+                    .collect();
+                let (data, status) = call
+                    .post_json(
+                        Route::IssueComments {
+                            issue_id: &args.issue_id,
+                        },
+                        &json!({"body": args.body}),
+                        &attempt,
+                    )
+                    .await?;
+                let comment_id = required_string(&data, "id", status, "comment")?.to_owned();
+                if data.get("issue_id").and_then(Value::as_str) != Some(args.issue_id.as_str()) {
+                    return Err(schema_error(
+                        status,
+                        "Tines comment receipt did not match the requested issue.",
+                    ));
+                }
+                attempt.created(comment_id.clone());
+                Ok((ReadData::new(data).with_links(links), comment_id))
+            })
+            .await;
+        match result {
+            Ok((result, comment_id)) => ResultEnvelope::new(result.data)
+                .with_links(result.links)
+                .with_write_receipt(comment_id)
+                .to_mcp_result(),
+            Err(error) => write.error(error).to_mcp_result(),
         }
     }
 
@@ -444,7 +500,7 @@ impl ReadTools {
             return validation("issue_id", "must be a non-empty issue ID");
         }
         self.execute(cancellation, move |call| async move {
-            let issue_link = artifact_issue_link(&call, &args.issue_id).await?;
+            let issue_link = issue_child_link(&call, &args.issue_id).await?;
             let (mut data, status) = call
                 .get_json_with_status(
                     Route::IssueArtifacts {
@@ -476,7 +532,7 @@ impl ReadTools {
             return validation("name", "must be a non-empty artifact name");
         }
         self.execute(cancellation, move |call| async move {
-            let issue_link = artifact_issue_link(&call, &args.issue_id).await?;
+            let issue_link = issue_child_link(&call, &args.issue_id).await?;
             let (data, status) = call
                 .get_json_with_status(
                     Route::IssueArtifact {
@@ -566,7 +622,7 @@ impl ReadTools {
         };
         match tines
             .run_tool(cancellation, move |call| async move {
-                let issue_link = artifact_issue_link(&call, &args.issue_id).await?;
+                let issue_link = issue_child_link(&call, &args.issue_id).await?;
                 let (metadata, metadata_status) = call
                     .get_json_with_status(
                         Route::IssueArtifact {
@@ -1336,6 +1392,10 @@ impl ServerHandler for ReadTools {
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let cancellation = context.ct;
         let result = match request.name.as_ref() {
+            "append_issue_comment" => {
+                self.append_issue_comment(parse_args(&request)?, cancellation)
+                    .await
+            }
             "list_projects" => {
                 self.list_projects(parse_args(&request)?, cancellation)
                     .await
@@ -1451,6 +1511,48 @@ impl ServerHandler for ReadTools {
             _ => return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>()),
         };
         Ok(result.into())
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AppendIssueCommentArgs {
+    /// Immutable issue ID; project names and issue numbers are not accepted.
+    issue_id: String,
+    /// Comment text, preserved verbatim. Nonblank, at most 100,000 UTF-16 code units.
+    body: String,
+}
+
+impl AppendIssueCommentArgs {
+    fn validate(&self) -> Result<(), TinesError> {
+        if self.issue_id.trim().is_empty() || matches!(self.issue_id.as_str(), "." | "..") {
+            return Err(TinesError::Validation {
+                field: "issue_id",
+                message: "must be a non-empty issue ID and valid path segment",
+            });
+        }
+        // ECMAScript String.trim uses WhiteSpace and LineTerminator, including
+        // FEFF but excluding U+0085 (which Rust's str::trim treats as whitespace).
+        let blank = self.body.chars().all(|c| {
+            matches!(c,
+                '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' |
+                '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' |
+                '\u{205F}' | '\u{3000}' | '\u{FEFF}'
+            )
+        });
+        if blank {
+            return Err(TinesError::Validation {
+                field: "body",
+                message: "must contain non-whitespace text",
+            });
+        }
+        if self.body.encode_utf16().count() > 100_000 {
+            return Err(TinesError::Validation {
+                field: "body",
+                message: "must be at most 100,000 UTF-16 code units",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -2021,6 +2123,10 @@ fn required_string<'a>(
             "issue_id" => {
                 schema_error(status, "Tines issue response was missing its immutable ID.")
             }
+            "comment" => schema_error(
+                status,
+                "Tines comment receipt was missing its immutable ID.",
+            ),
             _ => schema_error(
                 status,
                 "Tines workflow response was missing its immutable ID.",
@@ -2054,7 +2160,7 @@ fn issue_project_id(data: &Value, status: u16) -> Result<&str, TinesError> {
     ))
 }
 
-async fn artifact_issue_link(
+async fn issue_child_link(
     call: &TinesToolCall,
     issue_id: &str,
 ) -> Result<Option<Value>, TinesError> {
@@ -2354,5 +2460,27 @@ fn map_run_log_content_error(error: TinesError) -> TinesError {
             diagnostic_id,
         },
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod comment_tests {
+    use super::AppendIssueCommentArgs;
+
+    #[test]
+    fn comment_body_limit_counts_utf16_units_without_changing_the_body() {
+        for body in ["x".repeat(100_000), "🦀".repeat(50_000)] {
+            let args = AppendIssueCommentArgs {
+                issue_id: "iss-a".to_owned(),
+                body: body.clone(),
+            };
+            assert!(args.validate().is_ok());
+            assert_eq!(args.body, body);
+            let too_long = AppendIssueCommentArgs {
+                issue_id: "iss-a".to_owned(),
+                body: format!("{body}x"),
+            };
+            assert!(too_long.validate().is_err());
+        }
     }
 }

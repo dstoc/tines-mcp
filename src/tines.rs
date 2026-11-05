@@ -11,7 +11,7 @@ use std::{
 };
 
 use reqwest::{
-    Client, Response, StatusCode,
+    Client, Method, Response, StatusCode,
     header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, RETRY_AFTER},
     redirect::Policy,
 };
@@ -51,6 +51,7 @@ pub enum Route<'a> {
     Context,
     ContextItem { context_id: &'a str },
     IssueContext { issue_id: &'a str },
+    IssueComments { issue_id: &'a str },
     IssueJournal { issue_id: &'a str },
     IssueArtifacts { issue_id: &'a str },
     IssueArtifact { issue_id: &'a str, name: &'a str },
@@ -76,6 +77,7 @@ impl Route<'_> {
             Self::Context => "/context",
             Self::ContextItem { .. } => "/context/{id}",
             Self::IssueContext { .. } => "/issues/{id}/context",
+            Self::IssueComments { .. } => "/issues/{id}/comments",
             Self::IssueJournal { .. } => "/issues/{id}/journal",
             Self::IssueArtifacts { .. } => "/issues/{id}/artifacts",
             Self::IssueArtifact { .. } => "/issues/{id}/artifacts/{name}",
@@ -130,6 +132,11 @@ impl Route<'_> {
                 segments.push("issues");
                 push_dynamic_segment(segments, issue_id)?;
                 segments.push("context");
+            }
+            Self::IssueComments { issue_id } => {
+                segments.push("issues");
+                push_dynamic_segment(segments, issue_id)?;
+                segments.push("comments");
             }
             Self::IssueJournal { issue_id } => {
                 segments.push("issues");
@@ -359,7 +366,7 @@ impl TinesToolCall {
         query: &Query,
     ) -> Result<(Value, u16), TinesError> {
         let (body, status, _, diagnostic_id) = self
-            .get_body_with_status(route, query, MAX_JSON_BODY_BYTES, "application/json")
+            .request_body_with_status(route, query, MAX_JSON_BODY_BYTES, "application/json", None)
             .await?;
         let value = serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
             status,
@@ -376,17 +383,42 @@ impl TinesToolCall {
         query: &Query,
         limit_bytes: usize,
     ) -> Result<(Vec<u8>, u16, Option<String>), TinesError> {
-        self.get_body_with_status(route, query, limit_bytes, "application/octet-stream")
+        self.request_body_with_status(route, query, limit_bytes, "application/octet-stream", None)
             .await
             .map(|(body, status, content_type, _)| (body, status, content_type))
     }
 
-    async fn get_body_with_status(
+    /// Sends one JSON POST without retries. The caller owns outcome reporting,
+    /// including failures from the outer tool deadline and cancellation boundary.
+    pub(crate) async fn post_json(
+        &self,
+        route: Route<'_>,
+        body: &Value,
+        write: &WriteAttempt,
+    ) -> Result<(Value, u16), TinesError> {
+        let (body, status, _, diagnostic_id) = self
+            .request_body_with_status(
+                route,
+                &Query::new(),
+                MAX_JSON_BODY_BYTES,
+                "application/json",
+                Some((body, write)),
+            )
+            .await?;
+        let value = serde_json::from_slice(&body).map_err(|_| TinesError::InvalidJson {
+            status,
+            diagnostic_id,
+        })?;
+        Ok((value, status))
+    }
+
+    async fn request_body_with_status(
         &self,
         route: Route<'_>,
         query: &Query,
         limit_bytes: usize,
         accept: &'static str,
+        post: Option<(&Value, &WriteAttempt)>,
     ) -> Result<(Vec<u8>, u16, Option<String>, u64), TinesError> {
         let request_permit = self
             .inner
@@ -401,18 +433,38 @@ impl TinesToolCall {
         let route_template = route.template();
         let started = Instant::now();
         let url = build_url(&self.inner.base_url, route, query)?;
-        let request = self
+        let method = if post.is_some() {
+            Method::POST
+        } else {
+            Method::GET
+        };
+        let mut builder = self
             .inner
             .http
-            .get(url)
+            .request(method.clone(), url)
             .header(ACCEPT, accept)
-            .header(AUTHORIZATION, self.inner.authorization.clone())
+            .header(AUTHORIZATION, self.inner.authorization.clone());
+        if let Some((body, _)) = post {
+            builder = builder.json(body);
+        }
+        let request = builder
             .build()
             .map_err(|_| TinesError::Transport { diagnostic_id })?;
 
         let inner = self.inner.clone();
         let secret = self.inner.api_token.clone();
         let future = async move {
+            // This point is reached only when execution is polled, after all
+            // local checks. Once dispatched, cancellation cannot prove rollback.
+            if let Some((_, write)) = post {
+                if self.cancellation.is_cancelled() {
+                    return Err(TinesError::Cancelled);
+                }
+                if Instant::now() >= self.deadline {
+                    return Err(TinesError::Timeout);
+                }
+                write.dispatched();
+            }
             let response = inner.http.execute(request).await.map_err(|error| {
                 if error.is_timeout() {
                     tracing::debug!(
@@ -420,7 +472,8 @@ impl TinesToolCall {
                         route = route_template,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         outcome = "timeout",
-                        "Tines GET failed"
+                        method = method.as_str(),
+                        "Tines request failed"
                     );
                     TinesError::Timeout
                 } else {
@@ -429,7 +482,8 @@ impl TinesToolCall {
                         route = route_template,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         outcome = "transport",
-                        "Tines GET failed"
+                        method = method.as_str(),
+                        "Tines request failed"
                     );
                     TinesError::Transport { diagnostic_id }
                 }
@@ -442,7 +496,8 @@ impl TinesToolCall {
                 route = route_template,
                 status = status.as_u16(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
-                "Tines GET received response"
+                method = method.as_str(),
+                "Tines request received response"
             );
 
             if status.is_success() {
@@ -699,8 +754,67 @@ impl fmt::Display for TinesClientBuildError {
 
 impl Error for TinesClientBuildError {}
 
+/// Per-invocation state, shared with the HTTP execution future. No state is
+/// retained after the tool returns and no completion or retry is scheduled.
+#[derive(Clone, Default)]
+pub(crate) struct WriteAttempt(Arc<Mutex<WriteState>>);
+
+#[derive(Default)]
+struct WriteState {
+    dispatched: bool,
+    comment_id: Option<String>,
+}
+
+impl WriteAttempt {
+    fn dispatched(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dispatched = true;
+    }
+
+    pub(crate) fn created(&self, comment_id: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .comment_id = Some(comment_id);
+    }
+
+    pub(crate) fn error(&self, error: TinesError) -> TinesError {
+        let state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = &state.comment_id {
+            return error.with_write_outcome("created", Some(id.clone()));
+        }
+        let dispatched = state.dispatched;
+        // Native client-error rejections are definitive. A server error can
+        // follow a committed insert; malformed errors and HTTP 408 are ambiguous.
+        if dispatched
+            && matches!(&error, TinesError::Upstream { status, code, .. }
+                if (400..500).contains(status) && *status != 408 && code != "upstream_error")
+        {
+            return error;
+        }
+        error.with_write_outcome(
+            if dispatched {
+                "unknown"
+            } else {
+                "not_attempted"
+            },
+            None,
+        )
+    }
+}
+
 #[derive(Debug)]
 pub enum TinesError {
+    Write {
+        error: Box<TinesError>,
+        outcome: &'static str,
+        comment_id: Option<String>,
+    },
     Validation {
         field: &'static str,
         message: &'static str,
@@ -756,6 +870,41 @@ impl fmt::Display for TinesError {
 impl Error for TinesError {}
 
 impl TinesError {
+    pub(crate) fn with_write_outcome(
+        self,
+        outcome: &'static str,
+        comment_id: Option<String>,
+    ) -> Self {
+        Self::Write {
+            error: Box::new(self),
+            outcome,
+            comment_id,
+        }
+    }
+
+    fn details(&self) -> Option<Value> {
+        match self {
+            Self::Write {
+                error,
+                outcome,
+                comment_id,
+            } => {
+                let mut details = error
+                    .details()
+                    .and_then(|value| value.as_object().cloned())
+                    .unwrap_or_default();
+                details.insert("write_outcome".to_owned(), json!(outcome));
+                if let Some(id) = comment_id {
+                    details.insert("comment_id".to_owned(), json!(id));
+                }
+                Some(Value::Object(details))
+            }
+            Self::Upstream { details, .. } => details.clone(),
+            Self::ContentTooLarge { limit_bytes, .. } => Some(json!({"limit_bytes": limit_bytes})),
+            _ => None,
+        }
+    }
+
     fn fields(
         &self,
     ) -> (
@@ -767,6 +916,15 @@ impl TinesError {
         Option<u64>,
     ) {
         match self {
+            Self::Write { error, outcome, .. } => {
+                let mut fields = error.fields();
+                match *outcome {
+                    "unknown" => fields.2.push_str(" A comment may have been created. Inspect the issue before deciding whether to append again."),
+                    "created" => fields.2.push_str(" The comment was created. Do not repeat the append."),
+                    _ => {}
+                }
+                fields
+            }
             Self::Validation { field, message } => (
                 "validation",
                 "invalid_input".to_owned(),
@@ -926,13 +1084,43 @@ impl TinesError {
         data: Value,
         links: Vec<Value>,
     ) -> rmcp::model::CallToolResult {
-        let (source, code, message, status, retry_after, diagnostic_id) = self.fields();
-        let details = match self {
-            Self::Upstream { details, .. } => details.clone(),
-            Self::ContentTooLarge { limit_bytes, .. } => Some(json!({"limit_bytes": limit_bytes})),
-            _ => None,
+        let result = self.error_result(data, links);
+        if serialized_size(&result) <= MAX_TOOL_RESULT_BYTES {
+            return result;
+        }
+        let error = Self::ResultTooLarge {
+            limit_bytes: MAX_TOOL_RESULT_BYTES,
         };
-        let result = mcp_result(
+        // Drop oversized context while keeping a validated write receipt.
+        let fallback = match self {
+            Self::Write {
+                outcome,
+                comment_id,
+                ..
+            } => error.with_write_outcome(outcome, comment_id.clone()),
+            _ => error,
+        };
+        let result = fallback.error_result(Value::Null, Vec::new());
+        if serialized_size(&result) <= MAX_TOOL_RESULT_BYTES {
+            return result;
+        }
+        // An untrusted receipt ID can itself exceed the wire cap. Preserve the
+        // known outcome but omit that ID rather than recurse or truncate it.
+        let outcome = match self {
+            Self::Write { outcome, .. } => *outcome,
+            _ => unreachable!("bounded non-write errors fit without context"),
+        };
+        Self::ResultTooLarge {
+            limit_bytes: MAX_TOOL_RESULT_BYTES,
+        }
+        .with_write_outcome(outcome, None)
+        .error_result(Value::Null, Vec::new())
+    }
+
+    fn error_result(&self, data: Value, links: Vec<Value>) -> rmcp::model::CallToolResult {
+        let (source, code, message, status, retry_after, diagnostic_id) = self.fields();
+        let details = self.details();
+        mcp_result(
             json!({
                 "data": data,
                 "meta": {
@@ -951,14 +1139,7 @@ impl TinesError {
                 }
             }),
             true,
-        );
-        if serialized_size(&result) > MAX_TOOL_RESULT_BYTES {
-            return Self::ResultTooLarge {
-                limit_bytes: MAX_TOOL_RESULT_BYTES,
-            }
-            .to_mcp_result();
-        }
-        result
+        )
     }
 }
 
@@ -968,6 +1149,7 @@ pub struct ResultEnvelope {
     observed_at_ms: u128,
     links: Vec<Value>,
     omissions: Vec<String>,
+    write_receipt: Option<String>,
 }
 
 impl ResultEnvelope {
@@ -977,7 +1159,13 @@ impl ResultEnvelope {
             observed_at_ms: now_millis(),
             links: Vec::new(),
             omissions: Vec::new(),
+            write_receipt: None,
         }
+    }
+
+    pub(crate) fn with_write_receipt(mut self, comment_id: String) -> Self {
+        self.write_receipt = Some(comment_id);
+        self
     }
 
     pub fn with_links(mut self, links: Vec<Value>) -> Self {
@@ -1002,10 +1190,15 @@ impl ResultEnvelope {
         let result = mcp_result(value, false);
         let serialized_size = serialized_size(&result);
         if serialized_size > MAX_TOOL_RESULT_BYTES {
-            return TinesError::ResultTooLarge {
+            let error = TinesError::ResultTooLarge {
                 limit_bytes: MAX_TOOL_RESULT_BYTES,
-            }
-            .to_mcp_result();
+            };
+            return match &self.write_receipt {
+                Some(id) => error
+                    .with_write_outcome("created", Some(id.clone()))
+                    .to_mcp_result_with_context(Value::Null, self.links.clone()),
+                None => error.to_mcp_result(),
+            };
         }
         result
     }
@@ -1527,6 +1720,25 @@ mod tests {
             .with_writer(writer.clone())
             .finish();
         let request = async {
+            let write = super::WriteAttempt::default();
+            let attempt = write.clone();
+            let post_error = client
+                .run_tool(CancellationToken::new(), move |call| async move {
+                    call.post_json(
+                        Route::IssueComments {
+                            issue_id: "path-private-value",
+                        },
+                        &json!({"body":"request-private-body"}),
+                        &attempt,
+                    )
+                    .await
+                })
+                .await
+                .unwrap_err();
+            let diagnostic = write.error(post_error).to_mcp_result();
+            let diagnostic_text = serde_json::to_string(&diagnostic).unwrap();
+            assert!(!diagnostic_text.contains("request-private-body"));
+            assert!(!diagnostic_text.contains("local-test-token"));
             let mut query = Query::new();
             query.append("search", "query-private-value");
             call(
@@ -1960,5 +2172,166 @@ mod tests {
             .expect("bounded error result should serialize")
             .len();
         assert!(serialized_size <= MAX_TOOL_RESULT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn append_cancellation_before_dispatch_and_after_dispatch_have_distinct_outcomes() {
+        for dispatched in [false, true] {
+            let mut reply =
+                MockReply::json(StatusCode::CREATED, r#"{"id":"cmt-a","issue_id":"iss-a"}"#);
+            reply.gate = Some(Arc::new(Semaphore::new(0)));
+            let mut server = start_mock(reply).await;
+            let client = make_client(&server.base_url);
+            let cancellation = CancellationToken::new();
+            if !dispatched {
+                cancellation.cancel();
+            }
+            let request_cancellation = cancellation.clone();
+            let attempt = super::WriteAttempt::default();
+            let write = attempt.clone();
+            let task = tokio::spawn(async move {
+                client
+                    .run_tool(request_cancellation, move |call| async move {
+                        call.post_json(
+                            Route::IssueComments { issue_id: "iss-a" },
+                            &json!({"body":"text"}),
+                            &write,
+                        )
+                        .await
+                    })
+                    .await
+            });
+            if dispatched {
+                timeout(Duration::from_secs(1), server.observations.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                cancellation.cancel();
+            }
+            let error = task.await.unwrap().unwrap_err();
+            let result = attempt.error(error).to_mcp_result();
+            let value = result.structured_content.unwrap();
+            assert_eq!(
+                value["error"]["details"]["write_outcome"],
+                if dispatched {
+                    "unknown"
+                } else {
+                    "not_attempted"
+                }
+            );
+            assert_eq!(server.count.load(Ordering::SeqCst), usize::from(dispatched));
+            stop(server);
+        }
+    }
+
+    #[tokio::test]
+    async fn append_outer_deadline_and_admission_failure_preserve_write_outcomes() {
+        let mut reply = MockReply::json(StatusCode::CREATED, "{}");
+        reply.gate = Some(Arc::new(Semaphore::new(0)));
+        let server = start_mock(reply).await;
+        let client = make_client_with_deadline(&server.base_url, Duration::from_millis(50));
+        let attempt = super::WriteAttempt::default();
+        let write = attempt.clone();
+        let result = client
+            .run_tool(CancellationToken::new(), move |call| async move {
+                call.post_json(
+                    Route::IssueComments { issue_id: "iss-a" },
+                    &json!({"body":"text"}),
+                    &write,
+                )
+                .await
+            })
+            .await;
+        let value = attempt
+            .error(result.unwrap_err())
+            .to_mcp_result()
+            .structured_content
+            .unwrap();
+        assert_eq!(value["error"]["code"], "upstream_timeout");
+        assert_eq!(value["error"]["details"]["write_outcome"], "unknown");
+        assert_eq!(server.count.load(Ordering::SeqCst), 1);
+
+        let _slots = client.inner.tool_slots.acquire_many(4).await.unwrap();
+        let attempt = super::WriteAttempt::default();
+        let result = client
+            .run_tool(CancellationToken::new(), |_| async { Ok(()) })
+            .await;
+        let value = attempt
+            .error(result.unwrap_err())
+            .to_mcp_result()
+            .structured_content
+            .unwrap();
+        assert_eq!(value["error"]["code"], "tool_concurrency_limit");
+        assert_eq!(value["error"]["details"]["write_outcome"], "not_attempted");
+        assert_eq!(server.count.load(Ordering::SeqCst), 1);
+        stop(server);
+    }
+
+    #[tokio::test]
+    async fn append_timeout_during_preflight_is_not_attempted() {
+        let mut reply = MockReply::json(StatusCode::OK, "{}");
+        reply.gate = Some(Arc::new(Semaphore::new(0)));
+        let server = start_mock(reply).await;
+        let client = make_client_with_deadline(&server.base_url, Duration::from_millis(50));
+        let attempt = super::WriteAttempt::default();
+        let write = attempt.clone();
+        let result = client
+            .run_tool(CancellationToken::new(), move |call| async move {
+                call.get_json(Route::Issue { issue_id: "iss-a" }, &Query::new())
+                    .await?;
+                call.post_json(
+                    Route::IssueComments { issue_id: "iss-a" },
+                    &json!({"body":"text"}),
+                    &write,
+                )
+                .await
+            })
+            .await;
+        let value = attempt
+            .error(result.unwrap_err())
+            .to_mcp_result()
+            .structured_content
+            .unwrap();
+        assert_eq!(value["error"]["details"]["write_outcome"], "not_attempted");
+        assert_eq!(server.count.load(Ordering::SeqCst), 1);
+        stop(server);
+    }
+
+    #[tokio::test]
+    async fn append_receipt_survives_outer_cancellation_after_validation() {
+        let server = start_mock(MockReply::json(
+            StatusCode::CREATED,
+            r#"{"id":"cmt-a","issue_id":"iss-a"}"#,
+        ))
+        .await;
+        let client = make_client(&server.base_url);
+        let attempt = super::WriteAttempt::default();
+        let write = attempt.clone();
+        let cancellation = CancellationToken::new();
+        let cancel_after_receipt = cancellation.clone();
+        let result = client
+            .run_tool(cancellation, move |call| async move {
+                let (value, _) = call
+                    .post_json(
+                        Route::IssueComments { issue_id: "iss-a" },
+                        &json!({"body":"text"}),
+                        &write,
+                    )
+                    .await?;
+                assert_eq!(value["issue_id"], "iss-a");
+                write.created(value["id"].as_str().unwrap().to_owned());
+                cancel_after_receipt.cancel();
+                std::future::pending::<Result<(), TinesError>>().await
+            })
+            .await;
+        let value = attempt
+            .error(result.unwrap_err())
+            .to_mcp_result()
+            .structured_content
+            .unwrap();
+        assert_eq!(value["error"]["details"]["write_outcome"], "created");
+        assert_eq!(value["error"]["details"]["comment_id"], "cmt-a");
+        assert_eq!(server.count.load(Ordering::SeqCst), 1);
+        stop(server);
     }
 }

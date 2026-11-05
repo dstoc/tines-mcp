@@ -3,7 +3,7 @@ name = "tines-mcp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Read-only Tines MCP adapter"
+description = "Tines MCP adapter with read tools and append-only issue comments"
 license = "MIT"
 
 [lib]
