@@ -1,0 +1,16 @@
+{
+  "name": "tines-mcp-release-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "devDependencies": {
+    "@actions/expressions": "0.3.0",
+    "release-please": "17.3.0",
+    "yaml": "2.9.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

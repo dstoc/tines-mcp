@@ -3,23 +3,70 @@
 The release workflow publishes one `linux/amd64` adapter image at
 `ghcr.io/dstoc/tines-mcp:X.Y.Z`. It records the source commit and image digest and
 verifies signed provenance, signed release identity, and the container runtime.
-It publishes no floating tags, CLI archives, or GitHub Releases. Merging the
-workflow or creating a tag does not publish an image. This guide describes the
-prepared workflow; it is not evidence that a version has been published.
+It publishes no floating tags or CLI archives. Release Please maintains a reviewed
+version/changelog PR and creates its source tag and GitHub Release after merge.
+The same workflow run passes that exact version and source SHA to the existing
+container publisher. A source GitHub Release does not establish image acceptance.
+This guide describes the prepared workflow; it is not evidence that a version has been published.
 
 The image runs the adapter as `10001:10001`. The tunnel client remains a separate
 container. Release checks establish container liveness and clean shutdown, not
 live Tines permissions, the final API inventory, or intended-client tunnel access.
 See the selected source commit's README for its supported tools.
 
-## Before publication
+## Normal releases
 
-An operator must separately authorize each publication. Review the release PR and
-its independent checks first. Do not dispatch during implementation or review.
+Before the first normal release, the owner must complete the separate `0.1.0`
+bootstrap below and establish package access. Normal automation cannot bootstrap.
 
-The repository must permit the pinned checkout, Rust toolchain, attestation, and
-artifact-upload actions. The publication job uses only its ephemeral Actions
-`GITHUB_TOKEN`, with `contents: read`, `packages: write`, `attestations: write`, and
+1. Use conventional commit subjects on `main`, such as `fix:` or `feat:`. On each
+   main push, Release Please creates or updates one release PR for the root Rust
+   package. Review `Cargo.toml`, `Cargo.lock`, `.release-please-manifest.json`, and
+   `CHANGELOG.md` together. Dependency versions must stay unchanged unless a
+   separate reviewed change updates them.
+2. Approve bot-created or updated PR workflow runs when GitHub shows **Approve
+   workflows to run**. Review the final PR head after each bot update. Require
+   normal CI and independent review before merging. There is no auto-merge or
+   workflow self-approval.
+3. Merge the reviewed release PR to authorize its normal release. Release Please
+   creates stable `vX.Y.Z` source identity and changelog notes, then hands its
+   `release_created`, `tag_name`, `version`, and `sha` outputs to the publishing
+   job in the same run. A PR-only update does not publish. Automatic publication
+   always uses `normal` mode and independently checks the tag, ancestry and Cargo
+   versions. Do not dispatch a second publication for a successful run.
+4. Check and retain the image acceptance record below before deploying its digest.
+   If source release creation or publication fails, inspect the source records
+   and use explicit normal recovery. Do not assume a rerun emits release outputs.
+
+The checked-in `0.1.0` manifest and `bootstrap-sha` (`2e2af44`) seed version and
+changelog history only. They do not claim that `0.1.0` is published. Release Please
+uses its native single-crate Rust updater; no workspace or CLI archive flow runs.
+`CHANGELOG.md` is created with the first release PR.
+
+GitHub suppresses tag-push workflows for tags created with `GITHUB_TOKEN`. This
+flow uses a same-run dependency, not a tag-triggered workflow or a second dispatch.
+See [GitHub's token-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+
+## Owner setup before publication
+
+No real release, tag, release PR merge, or publishing dispatch belongs to
+implementation or review of this automation.
+
+Repository policy must permit GitHub Actions to create pull requests. An owner
+can check **Settings → Actions → General → Workflow permissions → Allow GitHub
+Actions to create and approve pull requests**. The workflow never approves PRs.
+If policy blocks PR creation or required checks, ask the owner to resolve it;
+do not introduce a PAT or change settings from the workflow. Policy permission
+was not verified during preparation (the read-only API lookup returned 403).
+
+The Release Please job uses only ephemeral `GITHUB_TOKEN` with `contents: write`,
+`issues: write` (release labels), and `pull-requests: write`, as required by the
+[pinned action](https://github.com/googleapis/release-please-action/tree/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071).
+These capabilities are isolated from the publishing job.
+
+The repository must permit the pinned Release Please, checkout, Rust toolchain,
+attestation, and artifact-upload actions. The publication job uses only its
+ephemeral Actions `GITHUB_TOKEN`, with `contents: read`, `packages: write`, `attestations: write`, and
 `id-token: write`. Repository policy must permit those capabilities and GitHub
 artifact attestations. The workflow does not need a PAT, a Tines token,
 `artifact-metadata` permission, or repository administration permission. Storage
@@ -30,8 +77,8 @@ Restrict tag and package writers and arrange exclusive publication for the whole
 run. The workflow serializes its own runs and checks the remote source tag and
 registry immediately before pushing and at completion. GHCR has no conditional
 tag write in this flow. An external publisher can race those checks. If other
-writers cannot be excluded, **do not dispatch**; request a reviewed authority
-change. Tag protections and digest pins remain necessary outside the workflow.
+writers cannot be excluded, **do not merge a release PR or dispatch**. Request a
+reviewed authority change. Tag protections and digest pins remain necessary outside the workflow.
 
 For an established package, this job's token must obtain the exact package at
 `GET /users/dstoc/packages/container/tines-mcp`, including its repository
@@ -50,24 +97,24 @@ repository association and Actions access. A successful GHCR login does not
 prove package read or enumeration authority. Record the actual token behavior
 in the first separately authorized publication; local tests do not establish it.
 
-## Prepare a version and source tag
+## Manual source preparation for bootstrap or recovery
 
-1. Review and merge a version change on `main`. Use a stable numeric version
-   without leading zeroes, such as `0.1.0`. Set both `Cargo.toml` and the local
-   `tines-mcp` entry in `Cargo.lock` to that version. Run the normal CI checks.
-2. Choose the exact reviewed source commit. Create an annotated `vX.Y.Z` tag for
-   that commit and push it as a **separate, authorized operator action**. Never
-   move a release tag. The workflow does not create or move tags.
-3. Record the full lowercase 40-character source SHA. It must match the tag and
-   be an ancestor of the selected `main` workflow commit. Source and workflow
-   commits can differ, for example when recovering with a reviewed workflow fix.
+Normal releases use the release PR above. For the owner-only first `0.1.0`
+publication, review the existing `0.1.0` Cargo versions and normal CI, choose the
+exact reviewed source commit, and create an annotated `v0.1.0` tag for it as a
+separately authorized owner action. This automation does not perform that setup.
+
+For recovery, retain the existing source tag and GitHub Release. Record the full
+lowercase 40-character source SHA. It must match the tag and be an ancestor of
+the selected `main` workflow commit. Never move a release tag. Source and workflow
+commits can differ when recovering with a reviewed workflow fix.
 
 The workflow uses release helpers from its own `main` checkout. It checks out the
 resolved source SHA separately and builds only that directory. Cargo metadata
 and the lockfile must agree with the tag. The source container is built once,
 loaded locally, and tested before the same image is pushed.
 
-## Dispatch an established package release
+## Dispatch normal recovery for an established package
 
 Use **Actions → release → Run workflow**, with `main` selected. Set:
 
@@ -189,6 +236,13 @@ checks during publication and recovery.
 
 ## Recover without replacing an image
 
+A source GitHub Release or tag can exist even if the Release Please action fails
+before returning outputs, or the publishing job fails or never starts. Inspect
+those records and preserve them. Fix workflow problems through review, then use
+the explicit normal dispatch above with the same tag and source SHA. Disabling
+the main-push Release Please job stops future automation; manual dispatch remains
+available. Reverting automation cannot undo created source or image records.
+
 Stop after any failure and inspect the record and exact package. Do not delete,
 retag, overwrite, repeat a push, or sign an existing unverified image to make the
 workflow green. Do not rebuild an existing version: mutable base images and
@@ -228,9 +282,12 @@ adapter image contains no tunnel agent or process supervisor.
 
 ## Local verification
 
-Run these checks from the repository root with the pinned Rust toolchain:
+Run these checks from the repository root with Node.js 24 (or later) and the pinned
+Rust toolchain:
 
 ```sh
+npm ci --prefix tests/release-please --ignore-scripts
+npm test --prefix tests/release-please
 python3 -m unittest discover -s tests/release -v
 bash -n scripts/container-smoke.sh
 cargo fmt --all -- --check
@@ -241,7 +298,10 @@ bash scripts/container-smoke.sh tines-mcp:ci
 ```
 
 Release tests mock registry/engine commands and test the actual shared shell
-script. They do not publish or establish live Actions-token authority. CI keeps
-the Rust suite and real container build/runtime check. A separately authorized
+script. The Node suite runs Release Please 17.3.0 (bundled in the pinned action)
+against a read-only fake GitHub client and evaluates actual workflow expressions.
+It checks synchronized versions, unchanged dependencies, no-release updates,
+malformed handoffs, skipped/failed jobs, and manual-only bootstrap. These tests do
+not publish or establish live Actions-token authority. CI keeps the Rust suite and real container build/runtime check. A separately authorized
 live publication must still establish GHCR access, both signed statements,
 anonymous pull, and runtime acceptance.

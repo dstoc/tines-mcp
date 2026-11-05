@@ -75,7 +75,7 @@ class DispatchTests(unittest.TestCase):
 
     def test_dispatch_gates(self):
         for field, value in [("GITHUB_REPOSITORY", "other/tines-mcp"), ("GITHUB_REF", "refs/tags/v0.1.0"),
-                             ("GITHUB_EVENT_NAME", "push"), ("RELEASE_SOURCE", "main"),
+                             ("GITHUB_EVENT_NAME", "pull_request"), ("RELEASE_SOURCE", "main"),
                              ("RELEASE_SOURCE", "a" * 39), ("GITHUB_SHA", "main"),
                              ("RELEASE_TAG", "v01.1.0"), ("RELEASE_TAG", "v1.2.3-rc.1"),
                              ("RELEASE_TAG", "v1.2.3\n"), ("RELEASE_TAG", "$(touch unexpected)"),
@@ -91,6 +91,37 @@ class DispatchTests(unittest.TestCase):
                              ("BOOTSTRAP_CONFIRMATION", ""), ("BOOTSTRAP_CONFIRMATION", r.confirmation(SOURCE_SHA) + " ")]:
             with self.subTest(field=field), self.assertRaises(r.ReleaseError):
                 r.dispatch(dict(base, **{field: value}))
+
+
+class AutomaticDispatchTests(unittest.TestCase):
+    def automatic(self, **overrides):
+        return environment(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
+                           RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="success", **overrides)
+
+    def test_normal_handoff(self):
+        self.assertEqual(r.dispatch(self.automatic())["mode"], "normal")
+
+    def test_handoff_failures(self):
+        base = self.automatic()
+        for field, values in {
+            "RELEASE_CREATED": ["", "false", "TRUE", "True"],
+            "RELEASE_PLEASE_RESULT": ["", "failure", "cancelled", "skipped"],
+            "RELEASE_VERSION": ["", "0.2.0", "0.1.0-rc.1", "0.1.0\n"],
+            "RELEASE_SOURCE": ["", "a" * 39, "A" * 40, "main"],
+            "RELEASE_TAG": ["", "v0.1.0-rc.1", "v01.1.0"],
+            "GITHUB_REPOSITORY": ["other/repo"],
+            "GITHUB_REF": ["refs/heads/other", "refs/tags/v0.1.0"],
+            "GITHUB_EVENT_NAME": ["release", "pull_request"],
+            "RELEASE_MODE": ["bootstrap"],
+            "BOOTSTRAP_CONFIRMATION": [r.confirmation(SOURCE_SHA)],
+        }.items():
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(r.ReleaseError):
+                    r.dispatch(dict(base, **{field: value}))
+        # Even the confirmed owner cannot bootstrap from a push.
+        with self.assertRaises(r.ReleaseError):
+            r.dispatch(dict(base, RELEASE_MODE="bootstrap",
+                            BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA)))
 
 
 class RegistryTests(unittest.TestCase):
@@ -327,6 +358,44 @@ class OrchestrationTests(unittest.TestCase):
         anonymous = next(c for c in calls if c[:2] == ("docker", "--config"))
         self.assertIn(f"{r.IMAGE}@{DIGEST}", anonymous)
         self.assertFalse(Path(anonymous[2]).exists())
+
+    def test_automatic_normal_publication_then_manual_recovery(self):
+        os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
+                          RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="success")
+        self.release.resolve()
+        self.release.publish()
+        self.replies += visible([version(tags=["0.1.0"])])
+        self.release.accept()
+        self.assertEqual(self.release.state["validation"], "passed")
+        os.environ.update(GITHUB_EVENT_NAME="workflow_dispatch", RELEASE_CREATED="",
+                          RELEASE_VERSION="", RELEASE_PLEASE_RESULT="skipped")
+        self.fresh_record()
+        self.replies = visible([version(tags=["0.1.0"])]) * 2
+        self.release.publish()
+        self.release.accept()
+        self.assertTrue(self.release.state["reused"])
+        self.assertEqual(len(self.pushes()), 1)
+        self.assertFalse((self.release.record.parent / "release-identity.json").exists())
+
+    def test_automatic_inaccessible_package_never_bootstraps(self):
+        os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
+                          RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="success")
+        self.release.resolve()
+        self.replies = [absent()]
+        with self.assertRaises(r.ReleaseError):
+            self.release.publish()
+        self.assertEqual(self.pushes(), [])
+        self.assertEqual(self.release.state["mode"], "normal")
+
+    def test_automatic_invalid_handoff_zero_registry_or_engine_commands(self):
+        self.commands.clear()
+        os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
+                          RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="failure")
+        before = copy.deepcopy(self.replies)
+        with self.assertRaises(r.ReleaseError):
+            self.release.resolve()
+        self.assertEqual(self.commands, [])
+        self.assertEqual(self.replies, before)
 
     def test_bootstrap_then_positive_access_and_normal_recovery(self):
         self.publish_bootstrap()
@@ -588,7 +657,7 @@ class GitSourceTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     def test_ephemeral_docker_configuration_and_cleanup(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        steps = workflow.split("    steps:\n", 1)[1]
+        steps = workflow.split("\n  release:\n", 1)[1].split("    steps:\n", 1)[1]
         initialize, *_, cleanup = steps.split("      - name: ")[1:]
         self.assertTrue(initialize.startswith("Initialize ephemeral Docker configuration\n"))
         self.assertTrue(cleanup.startswith("Remove ephemeral registry login\n"))
@@ -618,11 +687,11 @@ class WorkflowTests(unittest.TestCase):
     def test_authority_and_execution_boundaries(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
-        self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["workflow_dispatch"])
+        self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["push", "workflow_dispatch"])
         self.assertIn("options: [normal, bootstrap]", triggers)
         self.assertIn("default: normal", triggers)
         self.assertIn("group: tines-mcp-release\n  cancel-in-progress: false", workflow)
-        permissions = workflow.split("    permissions:\n", 1)[1].split("    env:\n", 1)[0]
+        permissions = workflow.split("\n  release:\n", 1)[1].split("    permissions:\n", 1)[1].split("    env:\n", 1)[0]
         self.assertEqual(set(permissions.splitlines()),
                          {"      contents: read", "      packages: write", "      attestations: write", "      id-token: write"})
         self.assertIn("ref: ${{ github.sha }}\n          path: workflow", workflow)
