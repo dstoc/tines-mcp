@@ -435,3 +435,127 @@ fn native_error_fixtures_remain_extensible_and_never_become_successes() {
         );
     }
 }
+
+fn project_labels(data: Value) -> Result<Projected, ProjectionError> {
+    prepare(
+        "add_issue_labels",
+        json!({"issue_id":"iss_a", "label_ids":["lbl_0123456789abcdef"]}),
+    )
+    .unwrap()
+    .project(response(200, ResponseBody::Json(data)))
+}
+
+#[test]
+fn label_receipts_exclude_extensions_but_preserve_native_data() {
+    let chip = json!({"id":"lbl_0123456789abcdef", "name":"P0", "color":"red"});
+    let mut native_chip = chip.clone();
+    native_chip["native_extension"] = json!("x".repeat(600_000));
+    let data = json!({"labels":[native_chip.clone()], "added":[native_chip.clone()], "created":[native_chip]});
+    let result = project_labels(data.clone()).unwrap();
+    assert_eq!(result.data, data);
+    assert_eq!(
+        serde_json::to_value(result.receipt.unwrap()).unwrap(),
+        json!({"labels":[chip.clone()], "added":[chip.clone()], "created":[chip]})
+    );
+    assert!(result.omissions.is_empty());
+}
+
+#[test]
+fn large_label_receipts_retain_exact_counts_including_native_no_ops() {
+    let labels: Vec<Value> = (0..6000)
+        .map(|i| json!({"id":format!("lbl_{i:016x}"), "name":format!("{i:050}"), "color":"red"}))
+        .collect();
+    for added in [json!([]), json!(labels.clone())] {
+        let data = json!({"labels":labels.clone(), "added":added, "created":labels.clone()});
+        let result = project_labels(data.clone()).unwrap();
+        assert_eq!(result.data, data);
+        let receipt = serde_json::to_value(result.receipt.unwrap()).unwrap();
+        assert_eq!(receipt["labels_count"], 6000);
+        assert_eq!(receipt["created_count"], 6000);
+        assert!(receipt.get("labels").is_none());
+        assert!(receipt.get("created").is_none());
+        if added.as_array().unwrap().is_empty() {
+            assert_eq!(receipt["added"], json!([]));
+            assert!(receipt.get("added_count").is_none());
+            assert_eq!(result.omissions.len(), 2);
+        } else {
+            assert_eq!(receipt["added_count"], 6000);
+            assert!(receipt.get("added").is_none());
+            assert_eq!(result.omissions.len(), 3);
+        }
+        assert!(serde_json::to_vec(&receipt).unwrap().len() < 256);
+    }
+    // All entries must validate, even after the compact collection exceeds budget.
+    let mut invalid = labels;
+    invalid.push(json!({"id":"missing_fields"}));
+    assert!(project_labels(json!({"labels":invalid, "added":[], "created":[]})).is_err());
+}
+
+#[test]
+fn label_collection_budget_counts_json_escaping_and_includes_4096_bytes() {
+    let chip = json!({"id":"lbl_0123456789abcdef", "name":"", "color":"red"});
+    let overhead = serde_json::to_vec(&json!([chip.clone()])).unwrap().len();
+    let capacity = 4096 - overhead;
+    for (name, fits) in [
+        ("x".repeat(capacity), true),
+        ("x".repeat(capacity + 1), false),
+        ("\"".repeat(capacity), false),
+        ("\\".repeat(capacity), false),
+        ("\n".repeat(capacity), false),
+        ("é".repeat(capacity / 2 + 1), false),
+        ("x".repeat(600_000), false),
+    ] {
+        for field in ["id", "name", "color"] {
+            let mut native_chip = chip.clone();
+            // Use the name baseline for the exact boundary; other fields exercise
+            // oversized strings rather than depending on their baseline lengths.
+            if field != "name" && name.len() < 600_000 {
+                continue;
+            }
+            native_chip[field] = json!(name);
+            let data = json!({"labels":[native_chip], "added":[], "created":[]});
+            let result = project_labels(data.clone()).unwrap();
+            assert_eq!(result.data, data);
+            let receipt = serde_json::to_value(result.receipt.unwrap()).unwrap();
+            assert_eq!(receipt.get("labels").is_some(), fits);
+            if fits {
+                assert_eq!(serde_json::to_vec(&receipt["labels"]).unwrap().len(), 4096);
+                assert!(result.omissions.is_empty());
+            } else {
+                assert_eq!(receipt["labels_count"], 1);
+                assert_eq!(result.omissions.len(), 1);
+            }
+            assert!(serde_json::to_vec(&receipt).unwrap().len() < 3 * 4096 + 256);
+        }
+    }
+}
+
+#[test]
+fn optional_link_timestamps_are_copied_only_when_numeric() {
+    let plan = prepare(
+        "add_issue_link",
+        json!({"issue_id":"iss_a", "kind":"blocks", "related_issue_id":"iss_b"}),
+    )
+    .unwrap();
+    for timestamp in [
+        Value::Null,
+        json!({"unexpected":"payload"}),
+        json!([]),
+        json!(true),
+        json!("1793840000000"),
+        json!(1793840000000_u64),
+        json!(1793840000000.5),
+    ] {
+        let data = json!({"id":"lnk_native", "kind":"blocks", "source_issue_id":"iss_a", "target_issue_id":"iss_b", "created_at":timestamp});
+        let result = plan
+            .project(response(201, ResponseBody::Json(data.clone())))
+            .unwrap();
+        assert_eq!(result.data, data);
+        let receipt = serde_json::to_value(result.receipt.unwrap()).unwrap();
+        if timestamp.is_number() {
+            assert_eq!(receipt["created_at"], timestamp);
+        } else {
+            assert!(receipt.get("created_at").is_none());
+        }
+    }
+}

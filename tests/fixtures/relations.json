@@ -79,8 +79,7 @@
           {
             "id": "lbl_AZaz09AZaz09AZaz",
             "name": "Docs: `data` $ONLY",
-            "color": "blue",
-            "native_extension": true
+            "color": "blue"
           }
         ],
         "added": [
@@ -92,8 +91,7 @@
           {
             "id": "lbl_AZaz09AZaz09AZaz",
             "name": "Docs: `data` $ONLY",
-            "color": "blue",
-            "native_extension": true
+            "color": "blue"
           }
         ],
         "created": []
@@ -159,8 +157,7 @@
           {
             "id": "lbl_AZaz09AZaz09AZaz",
             "name": "Docs: `data` $ONLY",
-            "color": "blue",
-            "native_extension": true
+            "color": "blue"
           }
         ],
         "added": [],
