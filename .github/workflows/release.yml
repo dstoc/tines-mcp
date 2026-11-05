@@ -41,12 +41,13 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      DOCKER_CONFIG: ${{ runner.temp }}/release-docker
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_SOURCE: ${{ inputs.source_sha }}
       RELEASE_MODE: ${{ inputs.mode }}
       BOOTSTRAP_CONFIRMATION: ${{ inputs.bootstrap_confirmation }}
     steps:
+      - name: Initialize ephemeral Docker configuration
+        run: printf 'DOCKER_CONFIG=%s/release-docker\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check out release orchestration from selected main commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -104,4 +105,4 @@ jobs:
           retention-days: 90
       - name: Remove ephemeral registry login
         if: always()
-        run: rm -rf -- "$DOCKER_CONFIG"
+        run: rm -rf -- "$RUNNER_TEMP/release-docker"
