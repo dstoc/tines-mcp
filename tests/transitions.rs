@@ -253,12 +253,19 @@ fn definitions_advertise_exact_selectors_native_witnesses_and_safe_annotations()
 struct Fixtures {
     reference_revision: String,
     responses: Vec<NativeResponse>,
+    issue_reads: Vec<NativeIssueRead>,
     errors: Vec<NativeError>,
 }
 #[derive(Deserialize)]
 struct NativeResponse {
     name: String,
     tool: String,
+    source: String,
+    data: Value,
+}
+#[derive(Deserialize)]
+struct NativeIssueRead {
+    name: String,
     source: String,
     data: Value,
 }
@@ -319,35 +326,67 @@ fn native_projections_keep_owner_private_owner_shared_and_member_differences() {
 
 #[test]
 fn callers_source_witnesses_from_each_native_issue_read_shape() {
-    for fixture in fixtures()
-        .responses
-        .into_iter()
-        .filter(|f| f.tool == "transition_issue")
-    {
+    let fixtures = fixtures();
+    assert_eq!(fixtures.issue_reads.len(), 3);
+    for fixture in fixtures.issue_reads {
+        assert!(!fixture.source.is_empty());
         let issue = fixture.data;
+        assert!(issue.get("permission_receipt").is_none());
+        let transition_id = if fixture.name == "shared_member" {
+            &issue["workflow"]["transitions"][0]["id"]
+        } else {
+            &issue["allowed_transitions"][0]["transition_id"]
+        };
+        assert_eq!(transition_id, "wft_exact");
         let mut args = json!({
-            "issue_id":issue["id"], "transition_id":"wft_exact",
+            "issue_id":issue["id"], "transition_id":transition_id,
             "expected_state_id":issue["state"]["id"],
             "expected_decision_revision":issue["decision_revision"],
             "expected_workflow_revision":issue["workflow_revision"]
         });
-        let choice = if fixture.name == "shared_owner" {
-            Some(&issue["permission_receipt"]["my_agents"])
+        if fixture.name == "shared_owner" {
+            assert!(issue.get("my_choice").is_none());
+            assert!(issue.get("consent_revision").is_none());
+            assert!(issue.get("consent_epoch").is_none());
+            let consent = fixtures
+                .responses
+                .iter()
+                .find(|f| f.name == "owner_consent")
+                .unwrap();
+            // The caller invokes this read separately; transition preparation cannot read.
+            let read = prepare("get_issue_consent", json!({"issue_id":issue["id"]}));
+            let plan = direct_calls::inspect(&read);
+            assert_eq!(plan.method, Method::Get);
+            assert_eq!(plan.segments, ["issues", "iss_native", "my-consent"]);
+            assert_eq!(plan.body, BodyFixture::Empty);
+            let consent = direct_calls::project(&read, response(consent.data.clone())).unwrap();
+            args["expected_consent_revision"] = consent.data["my_agents"]["revision"].clone();
+            args["expected_consent_epoch"] = consent.data["my_agents"]["epoch"].clone();
         } else if fixture.name == "shared_member" {
-            Some(&issue["my_choice"])
-        } else {
-            None
-        };
-        if let Some(choice) = choice {
-            args["expected_consent_revision"] = choice["revision"].clone();
-            args["expected_consent_epoch"] = choice["epoch"].clone();
+            args["expected_consent_revision"] = issue["my_choice"]["revision"].clone();
+            args["expected_consent_epoch"] = issue["my_choice"]["epoch"].clone();
         }
         let call = prepare("transition_issue", args.clone());
+        let plan = direct_calls::inspect(&call);
+        assert_eq!(plan.method, Method::Post);
+        assert_eq!(plan.segments, ["issues", "iss_native", "transition"]);
+        assert!(plan.query.is_empty());
         args.as_object_mut().unwrap().remove("issue_id");
         assert_eq!(
-            direct_calls::inspect(&call).body,
-            BodyFixture::Json { value: args }
+            plan.body,
+            BodyFixture::Json {
+                value: args.clone()
+            }
         );
+        assert_eq!(args["expected_workflow_revision"], 7);
+        if fixture.name != "private_owner" {
+            assert_eq!(args.as_object().unwrap().len(), 6);
+            assert_eq!(args["expected_consent_epoch"], 4);
+            assert_eq!(
+                args["expected_consent_revision"],
+                if fixture.name == "shared_owner" { 0 } else { 5 }
+            );
+        }
         if fixture.name != "shared_member" {
             assert_ne!(issue["workflow_revision"], issue["workflow"]["revision"]);
         }

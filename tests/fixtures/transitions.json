@@ -373,5 +373,135 @@
         }
       }
     }
+  ],
+  "issue_reads": [
+    {
+      "name": "private_owner",
+      "source": "apps/web/src/routes/api/v1/issues/[id]/+server.ts:41-44; apps/web/src/lib/server/api/issues.ts:1137-1177",
+      "data": {
+        "id": "iss_native",
+        "number": 19,
+        "title": "Review proposal",
+        "description": null,
+        "state": {
+          "id": "wfs_check",
+          "name": "Check",
+          "category": "active"
+        },
+        "decision_revision": 12,
+        "workflow_revision": 7,
+        "artifacts": [],
+        "project_id": "prj_private",
+        "project_name": "private",
+        "active_run": null,
+        "workflow": {
+          "id": "wf_implementation",
+          "revision": 91
+        },
+        "allowed_transitions": [
+          {
+            "transition_id": "wft_exact",
+            "name": "Request Review",
+            "to_state": {
+              "id": "wfs_review",
+              "name": "Review",
+              "category": "active"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "shared_owner",
+      "source": "apps/web/src/routes/api/v1/issues/[id]/+server.ts:41-44; apps/web/src/lib/server/api/issues.ts:1137-1177",
+      "data": {
+        "id": "iss_native",
+        "number": 19,
+        "title": "Review proposal",
+        "description": null,
+        "state": {
+          "id": "wfs_check",
+          "name": "Check",
+          "category": "active"
+        },
+        "decision_revision": 12,
+        "workflow_revision": 7,
+        "artifacts": [],
+        "project_id": "prj_shared",
+        "project_name": "shared",
+        "active_run": null,
+        "workflow": {
+          "id": "wf_implementation",
+          "revision": 91
+        },
+        "allowed_transitions": [
+          {
+            "transition_id": "wft_exact",
+            "name": "Request Review",
+            "to_state": {
+              "id": "wfs_review",
+              "name": "Review",
+              "category": "active"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "shared_member",
+      "source": "apps/web/src/routes/api/v1/issues/[id]/+server.ts:41-44; apps/web/src/lib/server/api/shared-issues.ts:284-375",
+      "data": {
+        "id": "iss_native",
+        "number": 19,
+        "title": "Review proposal",
+        "description": null,
+        "state": {
+          "id": "wfs_check",
+          "name": "Check",
+          "category": "active"
+        },
+        "decision_revision": 12,
+        "workflow_revision": 7,
+        "artifacts": [],
+        "mode": "member",
+        "viewer_role": "member",
+        "project": {
+          "id": "prj_shared",
+          "name": "shared",
+          "owner": {
+            "id": "usr_owner",
+            "name": "Owner"
+          },
+          "archived_at": null
+        },
+        "workflow": {
+          "id": "wf_implementation",
+          "name": "Implementation",
+          "states": [],
+          "transitions": [
+            {
+              "id": "wft_exact",
+              "name": "Request Review",
+              "to_state_id": "wfs_review",
+              "requires": []
+            }
+          ]
+        },
+        "my_choice": {
+          "value": "off",
+          "revision": 5,
+          "epoch": 4,
+          "source": "explicit_issue"
+        },
+        "latest_run": null,
+        "capabilities": {
+          "read": true,
+          "comment": true,
+          "decide": true,
+          "personal_permission": true,
+          "execute": false
+        }
+      }
+    }
   ]
 }
