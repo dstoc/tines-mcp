@@ -225,7 +225,8 @@ class DiagnosticCliTests(unittest.TestCase):
                 before = json.loads(record_path.read_text())
                 pushed = phase.startswith("postpush") or phase == "push_failure"
                 selected = phase.startswith("postpush")
-                report_env = dict(os.environ, RELEASE_JOB_STATUS="failure", GITHUB_STEP_SUMMARY=str(root / "summary"))
+                report_env = dict(os.environ, RELEASE_JOB_STATUS="failure", GITHUB_STEP_SUMMARY=str(root / "summary"),
+                                  RUNNER_TEMP=temp, DOCKER_CONFIG=str(root / "release-docker"))
                 report = subprocess.run([sys.executable, str(r.__file__), "report", "--workflow", temp,
                                          "--source", temp, "--record", str(record_path)],
                                         env=report_env, text=True, capture_output=True, check=False)

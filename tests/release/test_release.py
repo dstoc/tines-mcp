@@ -305,6 +305,15 @@ class OrchestrationTests(unittest.TestCase):
         self.label_overrides = {}
         self.replies = visible() + visible() + visible([version(tags=["0.1.2"])])
         self.signer = WORKFLOW_SHA
+        # Bridge filesystem behavior is exercised separately with real paths and
+        # the called publish/report entry points in test_credentials.py.
+        self.patch_login = patch.object(r, "initialize_login", side_effect=lambda:
+            r.write_json(Path(os.environ["DOCKER_CONFIG"]) / "config.json", {"auths": {"ghcr.io": {}}}))
+        self.patch_prepare = patch.object(r, "prepare_credentials")
+        self.patch_login.start()
+        self.patch_prepare.start()
+        self.addCleanup(self.patch_login.stop)
+        self.addCleanup(self.patch_prepare.stop)
         self.patch_run = patch.object(r, "run", side_effect=self.command)
         self.patch_run.start()
         self.addCleanup(self.patch_run.stop)
