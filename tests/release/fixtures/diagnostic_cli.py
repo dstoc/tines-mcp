@@ -18,7 +18,7 @@ variant = sys.argv[3] if len(sys.argv) > 3 else "predicate"
 os.environ.update(environment(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
                               RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success",
                               GH_TOKEN="TOKEN_" + marker, RELEASE_TAG="v0.1.2",
-                              DOCKER_CONFIG=str(base / "docker"), GITHUB_OUTPUT=str(base / "outputs")))
+                              RUNNER_TEMP=str(base), DOCKER_CONFIG=str(base / "release-docker"), GITHUB_OUTPUT=str(base / "outputs")))
 release = r.Release(base, base, record)
 
 

@@ -2,12 +2,15 @@
 """GHCR release checks. Live execution requires separate owner publication authorization."""
 
 import argparse
+import base64
 import http.client
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -638,6 +641,180 @@ def validate_evidence(body, state, fresh=True):
     return value
 
 
+# This bridge serves actions/attest's pinned @sigstore/oci reader. Its journal
+# contains identities only, never configuration bytes, and is outside uploads.
+def credential_paths():
+    root = Path(os.environ["RUNNER_TEMP"])
+    require(root.is_absolute() and root == root.resolve(), "Unsafe credential temporary path")
+    owned_directory(root)
+    require(Path(os.environ["DOCKER_CONFIG"]) == root / "release-docker",
+            "Unexpected Docker configuration path")
+    return root, root / "release-docker", root / "release-attestation-bridge"
+
+
+def owned_directory(path):
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and not info.st_mode & 0o022, "Unsafe credential directory")
+    return file_identity(info)
+
+
+def file_identity(info):
+    return [info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)]
+
+
+def owned_file(path):
+    info = path.lstat()
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and not info.st_mode & 0o022 and info.st_nlink == 1, "Unsafe credential file")
+    return file_identity(info)
+
+
+def credential_journal(path, value):
+    # Private directory, atomic replacement; neither file contains credentials.
+    temp = path / "state.tmp"
+    with open(temp, "x", opener=lambda p, f: os.open(p, f, 0o600)) as stream:
+        json.dump(value, stream)
+    temp.replace(path / "state.json")
+
+
+def initialize_login():
+    _, login, bridge = credential_paths()
+    require(not bridge.exists() and not bridge.is_symlink(), "Credential bridge already exists")
+    login.mkdir(mode=0o700)  # exclusive: do not adopt stale credentials or symlinks
+    config = login / "config.json"
+    with open(config, "x", opener=lambda p, f: os.open(p, f, 0o600)) as stream:
+        json.dump({"auths": {"ghcr.io": {}}}, stream)
+
+
+def prepare_credentials():
+    _, login, bridge = credential_paths()
+    owned_directory(login)
+    owned_file(login / "config.json")
+    login.chmod(0o700)
+    (login / "config.json").chmod(0o600)
+    require((login / "config.json").stat().st_size <= 32768, "Oversized login configuration")
+    value = read_json((login / "config.json").read_bytes())
+    require(isinstance(value, dict) and set(value) == {"auths"}
+            and isinstance(value["auths"], dict) and set(value["auths"]) == {"ghcr.io"}
+            and isinstance(value["auths"]["ghcr.io"], dict)
+            and set(value["auths"]["ghcr.io"]) == {"auth"}, "Unexpected login configuration")
+    auth = value["auths"]["ghcr.io"]["auth"]
+    require(isinstance(auth, str) and len(auth) <= 16384, "Invalid registry login")
+    try:
+        user, password = base64.b64decode(auth, validate=True).decode().split(":", 1)
+    except (ValueError, UnicodeError):
+        raise ReleaseError("Invalid registry login") from None
+    require(bool(user) and bool(password), "Invalid registry login")
+    home = Path.home()
+    require(home.is_absolute() and home == home.resolve(), "Unsafe default home")
+    owned_directory(home)
+    docker = home / ".docker"
+    existed = docker.exists() or docker.is_symlink()
+    if existed:
+        owned_directory(docker)
+    original = docker / "config.json"
+    prior = owned_file(original) if original.exists() or original.is_symlink() else None
+    require(all(re.fullmatch(r"[1-9][0-9]*", os.environ.get(key, ""))
+                for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")), "Missing credential execution identity")
+    bridge.mkdir(mode=0o700)
+    state = dict(home=str(home), directory=None, created_directory=not existed,
+                 original=prior, link=None, run_id=os.environ["GITHUB_RUN_ID"],
+                 run_attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+    try:
+        credential_journal(bridge, state)
+        if not existed:
+            docker.mkdir(mode=0o700)
+        state["directory"] = owned_directory(docker)
+        credential_journal(bridge, state)
+        if prior is not None:
+            # Preserve inode, mode and bytes; exclusive link avoids replacement.
+            os.link(original, bridge / "original", follow_symlinks=False)
+            require(file_identity(original.lstat()) == prior, "Default config changed")
+            original.unlink()
+        staged = bridge / "link"
+        staged.symlink_to(login / "config.json")
+        state["link"] = file_identity(staged.lstat())
+        credential_journal(bridge, state)
+        os.link(staged, original, follow_symlinks=False)  # exclusive install
+    except Exception:
+        # Restore partial preparation. The report path can retry cleanup after
+        # interruption; its independent finally path always removes job login.
+        cleanup_credentials()
+        raise
+
+
+def restore_credentials(bridge, login):
+    if not bridge.exists() and not bridge.is_symlink():
+        return
+    owned_directory(bridge)
+    journal = bridge / "state.json"
+    owned_file(journal)
+    require(journal.stat().st_size <= 4096, "Oversized credential journal")
+    state = read_json(journal.read_bytes())
+    require(state["run_id"] == os.environ.get("GITHUB_RUN_ID")
+            and state["run_attempt"] == os.environ.get("GITHUB_RUN_ATTEMPT"),
+            "Credential bridge belongs to another execution")
+    home = Path.home()
+    require(state["home"] == str(home) and home == home.resolve(), "Credential home changed")
+    owned_directory(home)
+    docker, original, backup = home / ".docker", home / ".docker/config.json", bridge / "original"
+    if state["directory"] is None:
+        # Preparation did not touch an existing config or expose the login.
+        require(not backup.exists() and not (bridge / "link").is_symlink(), "Incomplete credential journal")
+    else:
+        require(owned_directory(docker) == state["directory"], "Default config directory changed")
+        if original.exists() or original.is_symlink():
+            current = file_identity(original.lstat())
+            if current == state["link"] and original.is_symlink():
+                require(os.readlink(original) == str(login / "config.json"), "Credential link changed")
+                original.unlink()
+            else:
+                require(current == state["original"] and not original.is_symlink(),
+                        "Default config replaced; preserve original backup")
+        if state["original"] is not None:
+            if backup.exists() or backup.is_symlink():
+                info = backup.lstat()
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                        and file_identity(info) == state["original"], "Original config backup changed")
+                if not original.exists() and not original.is_symlink():
+                    os.link(backup, original, follow_symlinks=False)
+                require(file_identity(original.lstat()) == state["original"], "Original config restore failed")
+                backup.unlink()
+            else:
+                require(original.exists() and not original.is_symlink()
+                        and file_identity(original.lstat()) == state["original"], "Original config missing")
+        else:
+            require(not original.exists() and not original.is_symlink(), "Default config replaced")
+        if state["created_directory"]:
+            # Preserve unrelated files created during the job.
+            try:
+                docker.rmdir()
+            except OSError:
+                require(docker.is_dir() and any(docker.iterdir()), "Default directory cleanup failed")
+    staged = bridge / "link"
+    if staged.is_symlink():
+        require(file_identity(staged.lstat()) == state["link"], "Staged credential link changed")
+        staged.unlink()
+    (bridge / "state.tmp").unlink(missing_ok=True)
+    journal.unlink()
+    bridge.rmdir()
+
+
+def cleanup_credentials():
+    _, login, bridge = credential_paths()
+    try:
+        restore_credentials(bridge, login)
+    finally:
+        # Never let report/restore failure retain this job's credential target.
+        # rmtree does not follow directory symlinks; reject a replaced root.
+        if login.is_symlink():
+            login.unlink()
+        elif login.exists():
+            owned_directory(login)
+            shutil.rmtree(login)
+
+
 class Release:
     def __init__(self, workflow, source, record):
         self.workflow, self.source, self.record = Path(workflow).resolve(), Path(source).resolve(), Path(record)
@@ -764,7 +941,7 @@ class Release:
         token = os.environ.get("GH_TOKEN", "")
         registry = Registry(token, self.observe_package)
         # Keep login in the job's disposable file store, never an auto-detected OS helper.
-        write_json(Path(os.environ["DOCKER_CONFIG"]) / "config.json", {"auths": {"ghcr.io": {}}})
+        initialize_login()
         run("docker", "login", "ghcr.io", "--username", os.environ["GITHUB_ACTOR"], "--password-stdin", input=token)
         package_id, digest = registry.lookup(self.state["version"], self.state["creation_eligible"])
         self.save(package_id=package_id,
@@ -813,6 +990,7 @@ class Release:
                 "Post-push package identity/digest conflict")
         self.save(package_id=after_id)
         write_json(self.record.parent / "release-identity.json", identity(self.state, self.state["workflow_sha"]))
+        prepare_credentials()
         output(new_image="true", digest=digest)
 
     def accept(self):
@@ -932,21 +1110,31 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--record", required=True)
     args = parser.parse_args()
-    release = Release(args.workflow, args.source, args.record)
+    cleanup_failed = False
+    if args.phase == "report":
+        # This runs before loading a possibly missing/corrupt release record.
+        try:
+            cleanup_credentials()
+        except (ReleaseError, OSError, KeyError, TypeError, ValueError):
+            print("Credential restoration failed; preserve private backup for operator review", file=sys.stderr)
+            cleanup_failed = True
+    release = None
     try:
+        release = Release(args.workflow, args.source, args.record)
         getattr(release, args.phase)()
     except (ReleaseError, OSError, KeyError, TypeError, ValueError) as error:
         # Never serialize raw exceptions or API bodies; fields may contain credentials.
         message = str(error) if isinstance(error, ReleaseError) else "Invalid response or local execution failure"
         try:
-            release.save(error=message, validation="incomplete")
+            if release is not None:
+                release.save(error=message, validation="incomplete")
         except (ReleaseError, OSError, KeyError, TypeError, ValueError):
             # The previous durable push boundary remains authoritative. Do not
             # leak a second write exception or claim that evidence was retained.
             print("Release record could not be saved; preserve existing evidence", file=sys.stderr)
         print(message, file=sys.stderr)
         return 1
-    return 0
+    return 1 if cleanup_failed else 0
 
 
 if __name__ == "__main__":

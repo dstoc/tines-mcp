@@ -39,7 +39,33 @@ authorized by this implementation.
 
 ## Exact v0.1.2 draft recovery
 
-The reviewed helper provides one narrow creation path for existing draft
+**Creation is now consumed.** Recovery run `42022779198`, attempt 1, pushed digest
+`sha256:7c775b55c896df425c65c8a4f28d334f98a1d9148ac4d5697aa891e6946a86a3`
+(package ID `16599548`), according to the issue's independent job-log inspection.
+It then failed at registry attestation credential discovery. Its permanent marker,
+asset `713244917`, must not be deleted, replaced, reset or reused as creation
+authority. Preserve draft `435049346`, its tag and exact source below.
+The no-push preflight described below is historical; it cannot authorize another
+build or push after this incident.
+
+The attestation API returned an original SLSA bundle, but the earlier verifier
+could not initialize trusted Sigstore verification. Marker bytes, original
+diagnostics/logs and package reads were denied. These are unresolved evidence
+limits; this change does not retry or bypass them. A failed registry attachment
+does not prove that GitHub-side provenance is missing or verified.
+
+The credential fix below changes no workflow file. It therefore introduces no
+retained-source workflow-difference publication restriction. A future recovery
+must compare the complete workflow tree again. Ordinary existing-digest reuse
+still requires both registry-backed statements from the same signer and creates
+no new attestations. This incident needs a separately reviewed acceptance decision
+and permitted original evidence before any repair. See the
+[recovery proposal](proposals/attestation-credentials-existing-digest-recovery.md)
+for the exact two-signer/source-evidence decision. No recovery execution is
+authorized by this implementation.
+
+
+The retained helper's historical creation guard targets existing draft
 `435049346`, tag `v0.1.2`, source
 `bf97287109eaab863d26ed82307d31db7c3c6a71`. Implementation approval does not
 authorize live recovery. Preserve that draft, tag, source and published v0.1.1.
@@ -63,10 +89,11 @@ not retried or bypassed. These metadata observations do not claim downloaded or
 independently hashed archive bytes. No archive reader or Actions-read grant is
 part of this path.
 
-### Separate owner preflight and execution decision
+### Historical owner preflight (consumed)
 
-Before execution, CI and independent implementation review must pass. The owner
-must record a fresh decision on tines-mcp/40 that:
+The original execution required CI, independent implementation review and an
+owner decision on tines-mcp/40 with the following facts. This list records past
+requirements; it cannot authorize another creation attempt:
 
 1. Accepts the approved attributed original no-push evidence and accounts for
    all later publication activity and unresolved pushes. Recheck original
@@ -408,6 +435,35 @@ package repositories can change its bytes.
   incident. The workflow does not move the tag back or repair a raced registry
   write. Use previously recorded digest pins for deployed instances.
 
+## Ephemeral credentials for attestation
+
+Normal new-image releases use the existing ephemeral job login in
+`$RUNNER_TEMP/release-docker`. The pinned action's `@sigstore/oci` 0.7.2 reader
+ignores `DOCKER_CONFIG` and reads the default `~/.docker/config.json` instead.
+The release helper temporarily links that path to the isolated GHCR-only login
+before it emits `new_image=true`. It changes no `HOME`, token permission or
+credential helper. Reused digests skip this bridge and both attestation actions.
+
+The existing `always()` report command restores the original owned config before
+loading the release record. The original file's bytes, inode and mode are
+preserved in a private directory at
+`$RUNNER_TEMP/release-attestation-bridge`, outside all artifact paths. The journal
+contains identities only. Never upload that directory: its original-config
+backup can contain pre-existing runner credentials.
+
+Unsafe files, symlinks, owners, permissions, stale state or an unexpected config
+replacement stop preparation or restoration. Restoration failure preserves the
+original backup and reports a fixed error. A `finally` path removes the job login
+target even when restoration fails; the final `always()` shell step removes it
+independently of checkout, report or initialization failures. Do not adopt or
+reset leftover bridge state for another execution.
+
+These are GitHub-hosted ephemeral runner guarantees under ordinary completion
+and cooperative cancellation. `always()` cannot guarantee cleanup after hard
+cancellation or host loss. Those outcomes rely on runner teardown. Do not use
+this lifecycle on a persistent shared runner without a separately reviewed
+cleanup design.
+
 ## Owner settings and publication authority
 
 After CI and independent review, the owner can separately enable **Settings →
@@ -445,7 +501,7 @@ adapter image contains no tunnel agent or process supervisor.
 
 ## Local verification
 
-Run these checks from the repository root with Node.js 24 (or later), actionlint
+Run these checks from the repository root with Node.js 24.15.0 (or later supported by the pinned test dependency), actionlint
 1.7.12 (the CI pin), and the pinned Rust toolchain:
 
 ```sh
@@ -462,7 +518,11 @@ bash scripts/container-smoke.sh tines-mcp:ci
 ```
 
 Release tests mock registry/engine commands and test the actual shared shell
-script. The Node suite runs Release Please 17.3.0 (bundled in the pinned action)
+script. The Node suite also exercises the actual lockfile-pinned `@sigstore/oci` reader
+with fixture credentials and checks every retained-source workflow byte/mode.
+The Python suite exercises partial preparation, interrupted preparation,
+restoration failure and cleanup before corrupt-record loading.
+The Node suite runs Release Please 17.3.0 (bundled in the pinned action)
 against a read-only fake GitHub client and evaluates actual workflow expressions.
 It checks synchronized versions, unchanged dependencies, no-release updates,
 malformed handoffs, skipped/failed jobs, fixed incident admission through both
@@ -472,3 +532,15 @@ workflow syntax and Actions contexts. CI keeps these checks, the Rust suite, and
 the real container build/runtime check. A separately authorized
 live publication must still establish GHCR access, both signed statements,
 anonymous pull, and runtime acceptance.
+
+For an additional local probe through the actual shipped action runtime, check
+out `actions/attest` at `1e69f48acb82d1966a394da916b4c1698aa569d6` and run:
+
+```sh
+ATTEST_BUNDLE=/path/to/attest/dist/index.js node --test tests/release-please/credentials.test.mjs
+```
+
+The probe checks the bundle SHA-256 and runs its credential module without action
+startup. It uses isolated fixture homes and no real credentials or network
+writes. CI uses the public dependency with the same version and package integrity
+as that action's lockfile; the shipped-bundle probe is an additional local check.

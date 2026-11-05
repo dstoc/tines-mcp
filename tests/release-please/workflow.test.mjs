@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import fs, {readFileSync} from 'node:fs';
+import crypto from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {spawnSync} from 'node:child_process';
 import {test} from 'node:test';
@@ -274,4 +275,36 @@ test('restored dispatch environment admits only the fixed incident first attempt
     assert.equal(state.recovery.marker.run_attempt, '1');
     assert.equal(state.recovery.marker.incident_run_id, 42010011054);
   }
+});
+
+test('credential bridge preserves every retained-source workflow byte and mode', () => {
+  const workflowDir = new URL('.github/workflows/', root);
+  const paths = [];
+  function walk(directory, prefix = '') {
+    for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+      const relative = prefix + entry.name;
+      if (entry.isDirectory()) walk(new URL(entry.name + '/', directory), relative + '/');
+      else {
+        assert.ok(entry.isFile(), 'workflow tree must contain only regular files');
+        paths.push(relative);
+      }
+    }
+  }
+  walk(workflowDir);
+  assert.deepEqual(paths.sort(), ['release.yml', 'test.yml']);
+  const blobs = {'release.yml': 'e0889675fbfb7bd9663d7bf302b29520210eeb7b',
+    'test.yml': 'ccb5f1b8d2d7df9be7417ced80449430ef069557'};
+  for (const name of paths) {
+    const file = new URL(name, workflowDir);
+    const body = fs.readFileSync(file);
+    const blob = crypto.createHash('sha1').update(`blob ${body.length}\0`).update(body).digest('hex');
+    assert.equal(blob, blobs[name], `retained-source workflow differs: ${name}`);
+    assert.equal(fs.statSync(file).mode & 0o111, 0);
+  }
+  // These existing callers cover preparation, restoration and independent target
+  // deletion without adding a workflow step or granting a new permission.
+  assert.ok(phaseIndex('publish') < phaseIndex('report'));
+  assert.equal(job.steps[phaseIndex('report')].if, 'always()');
+  assert.equal(job.steps.at(-1).if, 'always()');
+  assert.equal(job.steps.at(-1).run, 'rm -rf -- "$RUNNER_TEMP/release-docker"');
 });
