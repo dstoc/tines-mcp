@@ -1,5 +1,7 @@
 # tines-mcp
 
+Versioned image preparation, verification, and recovery: [release guide](docs/releases.md).
+
 **tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data, and append issue comments. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
 
 ## Available tools
