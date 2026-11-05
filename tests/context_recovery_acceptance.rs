@@ -1,4 +1,5 @@
-//! Executor acceptance. Native authorization is a separate opt-in scenario below.
+//! Executed adapter acceptance plus two ignored, unrun historical native scenarios.
+//! See docs/testing/context-recovery.md for the revised evidence boundary.
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -582,7 +583,8 @@ async fn recovery_response_loss_and_truncation_never_resend_or_inspect_automatic
 }
 
 // These checks deliberately have no fallback to the supervisor's TINES_API_KEY.
-// Provision the disposable fixture described in docs/testing/context-recovery.md.
+// Historical, unrun scenarios; outside the revised mcp-14 gate.
+// Do not provision or run them for this issue. See docs/testing/context-recovery.md.
 fn native_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("set {name} for the disposable native scenario"))
 }
@@ -632,7 +634,7 @@ fn native_denial(result: &Value, code: &str, domain: Option<&str>) {
 }
 
 #[tokio::test]
-#[ignore = "requires the pinned disposable native Tines fixture; see docs/testing/context-recovery.md"]
+#[ignore = "unrun historical native scenario; outside revised gate; see docs/testing/context-recovery.md"]
 async fn native_context_versions_scopes_and_run_key_authority() {
     let url = native_url();
     assert_native_revision(&url).await;
@@ -736,7 +738,7 @@ async fn native_context_versions_scopes_and_run_key_authority() {
 }
 
 #[tokio::test]
-#[ignore = "requires a parked issue, scoped credentials and a cancellable run in disposable Tines"]
+#[ignore = "unrun historical native scenario; outside revised gate; see docs/testing/context-recovery.md"]
 async fn native_operational_permissions_resume_and_cancellation_observations() {
     let url = native_url();
     assert_native_revision(&url).await;
