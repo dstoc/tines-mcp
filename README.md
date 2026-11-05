@@ -1,14 +1,14 @@
 # tines-mcp
 
-**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data, and append issue comments. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
+**tines-mcp** is a Rust service that lets an MCP client read Tines projects, issues, workflows, labels, activity, context, issue artifacts, and run data, and create issues, edit issue prose, and append issue comments. It serves Streamable HTTP at **/mcp** and process liveness at **/healthz**.
 
 ## Available tools
 
-The service provides nineteen read-only tools and one append tool:
+The service provides these read and issue-content tools:
 
 - **list_projects** and **get_project**
 - **list_issues** and **get_issue**
-- **append_issue_comment** to append a comment using an immutable issue ID
+- **create_issue**, **edit_issue**, and **append_issue_comment**
 - **list_issue_artifacts**, **get_issue_artifact**, and **read_artifact_content**
 - **list_workflows** and **get_workflow**
 - **list_labels**
@@ -20,19 +20,24 @@ The service provides nineteen read-only tools and one append tool:
 
 **get_issue** accepts either an issue ID or a project ID and positive issue number. Use the issue ID when it is available. The response preserves the current project attribution after an issue moves.
 
-**append_issue_comment** requires **issue_id** and **body**. It preserves the body verbatim and accepts nonblank text up to 100,000 JavaScript UTF-16 code units, subject to the configured serialized MCP request limit (2 MiB by default). It uses the configured Tines token and normal API permissions. It verifies the issue identity before sending the append. The result includes the native comment object and an issue link when available.
+**append_issue_comment** requires **issue_id** and **body**. It preserves the body verbatim and accepts nonblank text up to 100,000 JavaScript UTF-16 code units, subject to the configured serialized MCP request limit (2 MiB by default). It uses the configured Tines token and normal API permissions. It sends one direct POST without a parent issue lookup. The result includes the native comment object and a validated comment receipt; it does not fetch issue coordinates for a link.
 
 The append is non-idempotent: repeating it can create another comment. The service never retries it automatically. If the outcome is unknown, inspect the issue before deciding whether to append again. Losing or canceling the client response does not undo a committed comment. The tool provides no exactly-once guarantee and cannot edit or delete comments.
 
-Errors use the normal envelope. **error.details.write_outcome** describes append failures:
+**create_issue** requires **project_id** and **title**. Optional **description**, **workflow_id**, **state**, **label_ids**, **blocked_by**, **blocks**, and **expected_sharing_revision** go into the same native POST. Label IDs must refer to existing labels. Creation never calls transition or resume. The selected workflow's initial state may be active and eligible for dispatch. To file without starting, select a known backlog state; read the workflow separately if needed. Investigate an unknown creation outcome before repeating the call.
+
+**edit_issue** requires **issue_id** and at least one of **title** or **description**. Omitted fields remain unchanged; an empty description clears it. It cannot change state, workflow, scheduling, or runner pins. Titles have a 500 UTF-16-unit limit and descriptions have a 100,000-unit limit. Both tools send prose verbatim; Tines trims titles. Native prose edits have no revision witness or compare-and-swap guarantee.
+
+Issue-content results use **meta.write.outcome** to report write evidence:
 
 | Value | Meaning |
 | --- | --- |
-| **not_attempted** | The POST was not dispatched. |
-| **unknown** | A comment may have been created. Check the issue before repeating the append. |
-| **created** | A valid creation receipt arrived, but the adapter could not return the ordinary result. **comment_id** is retained when it fits the result limit. |
+| **not_attempted** | The request was not dispatched. |
+| **rejected** | Native evidence proves that no mutation committed. |
+| **confirmed** | A validated receipt confirms the operation. |
+| **unknown** | Dispatch occurred, but the result does not establish commitment or rejection. Check the issue before repeating the write. |
 
-Definitive native rejections preserve the API error without an outcome field.
+HTTP status alone does not prove rejection. Native errors stay in **error**; HTTP status and Retry-After stay in **meta**. A validated success that exceeds the result limit remains successful with **data:null**, a bounded **meta.write.receipt**, and an omission notice.
 
 **list_issues** uses the global issue list and returns one native page. It omits descriptions by default. Set **descriptions=true** to include them. Continue only when **next_cursor** is not null, and keep the same filters on the next call. An upstream empty page can still have a continuation cursor.
 
@@ -74,7 +79,7 @@ curl -i http://127.0.0.1:8080/healthz
 
 The health endpoint returns `204 No Content`. It does not contact Tines or validate an upstream token.
 
-The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. The configured token can both read data and append comments through these tools. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
+The MCP endpoint has no MCP-layer authentication. Keep it on loopback or place it behind a deliberately restricted private network or tunnel. Everyone who can reach the endpoint can use the configured Tines token through every available tool. The configured token can read data, create issues, edit issue prose, and append comments through these tools. Tines enforces the token's project restrictions; the adapter returns token-visible records without an additional project policy.
 
 The default Host allowlist permits loopback hosts. Browser requests with an `Origin` header are rejected unless that exact origin is configured. Host and Origin checks limit unintended requests, but they are not authentication.
 
@@ -208,7 +213,7 @@ The local Rust tests use mock Tines endpoints and fixtures to check adapter conf
 - Each Tines tool call has a 45-second deadline and a 5-second connection timeout.
 - The process admits up to four concurrent tool calls and eight concurrent upstream requests. It rate-limits calls to 10 per second with a burst of 20. Excess work is rejected instead of queued, and upstream requests are not retried automatically.
 - MCP POST bodies are limited to 2 MiB by default. Set `MCP_MAX_REQUEST_BYTES` to change the limit, up to 36 MiB. The limit applies to both declared and streamed bodies. Oversized requests return HTTP 413. At most four POST requests are admitted before body buffering; excess requests return HTTP 503. Body reading has a total 30-second deadline and returns HTTP 408 on timeout. GET streams do not consume POST admission permits. Raising this budget increases memory use for encoded input and parsed data; client and tunnel limits still apply. Tines JSON responses are limited to 32 MiB; upstream error bodies are limited to 8 KiB.
-- The complete serialized MCP tool result is limited to 512 KiB. Oversized results return an error instead of a truncated success.
+- The complete serialized MCP tool result is limited to 512 KiB. Validated direct-call successes retain a bounded receipt and an explicit omission notice when native data does not fit. Unvalidated oversized responses return an error.
 - The service stores no Tines data, performs no background polling, and requires no writable data volume. `/healthz` reports process liveness only.
 
 ## Checks
