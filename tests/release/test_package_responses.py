@@ -13,16 +13,16 @@ from test_release import r, package, unavailable, version
 
 FIELDS = {
     "schema_version", "route", "http_status", "body_bytes_observed", "json_result", "json_type",
-    "link_state", "json_object", "message_exact", "documentation_string", "documentation_prefix", "link_absent",
+    "link_state", "json_object", "message_exact", "message_string", "message_nonempty", "documentation_string", "documentation_prefix", "link_absent",
 }
 MARKER = "SECRET_RESPONSE_MARKER"
 HOSTILE = MARKER + '\x1b[31m\r\n::error::unsafe'
 
 
 def snapshot(**values):
-    result = dict(schema_version=1, route="package_metadata", http_status=404,
+    result = dict(schema_version=2, route="package_metadata", http_status=404,
                   body_bytes_observed=None, json_result="parsed", json_type="object", link_state="absent",
-                  json_object=True, message_exact=True, documentation_string=True,
+                  json_object=True, message_exact=True, message_string=True, message_nonempty=True, documentation_string=True,
                   documentation_prefix=True, link_absent=True)
     result.update(values)
     return result
@@ -31,9 +31,9 @@ def snapshot(**values):
 def assert_safe_snapshot(test, value):
     test.assertEqual(set(value), FIELDS)
     test.assertEqual(type(value["schema_version"]), int)
-    test.assertEqual(value["schema_version"], 1)
+    test.assertEqual(value["schema_version"], 2)
     test.assertEqual(value["route"], "package_metadata")
-    for key in ("json_object", "message_exact", "documentation_string", "documentation_prefix", "link_absent"):
+    for key in ("json_object", "message_exact", "message_string", "message_nonempty", "documentation_string", "documentation_prefix", "link_absent"):
         test.assertTrue(value[key] is None or type(value[key]) is bool)
     for key, upper in (("http_status", 999), ("body_bytes_observed", r.PACKAGE_BODY_LIMIT + 1)):
         test.assertTrue(value[key] is None or type(value[key]) is int and 0 <= value[key] <= upper)
@@ -75,13 +75,13 @@ class PackageResponseTests(unittest.TestCase):
         self.assertNotIn(MARKER, json.dumps(value) + (error or ""))
         return result, error, value
 
-    def test_each_predicate_is_recorded_without_relaxing_acceptance(self):
+    def test_predicate_flags_match_the_shape_policy(self):
         valid = unavailable()[1]
         cases = [(valid, None, {}),
-                 ({}, None, dict(message_exact=False, documentation_string=False, documentation_prefix=False)),
+                 ({}, None, dict(message_exact=False, message_string=False, message_nonempty=False, documentation_string=False, documentation_prefix=False)),
                  (dict(valid, message=HOSTILE), None, dict(message_exact=False)),
-                 (dict(valid, message=None), None, dict(message_exact=False)),
-                 (dict(documentation_url=valid["documentation_url"]), None, dict(message_exact=False)),
+                 (dict(valid, message=None), None, dict(message_exact=False, message_string=False, message_nonempty=False)),
+                 (dict(documentation_url=valid["documentation_url"]), None, dict(message_exact=False, message_string=False, message_nonempty=False)),
                  (dict(message="Not Found"), None, dict(documentation_string=False, documentation_prefix=False)),
                  (dict(valid, documentation_url=[HOSTILE]), None,
                   dict(documentation_string=False, documentation_prefix=False)),
@@ -99,11 +99,28 @@ class PackageResponseTests(unittest.TestCase):
                 body = json.dumps(data).encode()
                 result, error, observed = self.observe(body, link=link)
                 self.assertEqual(observed, snapshot(body_bytes_observed=len(body), **flags))
-                if flags:
+                if flags and flags != dict(message_exact=False):
                     self.assertIsNotNone(error)
                 else:
                     self.assertIsNone(error)
                     self.assertEqual(result, (None, None))
+
+    def test_varied_nonempty_messages_are_shapes_not_authority(self):
+        for message in ("Synthetic unavailable", "Resource not accessible", "拒否", HOSTILE):
+            for eligible in (True, False):
+                body = json.dumps(dict(unavailable()[1], message=message)).encode()
+                result, error, observed = self.observe(body, eligible=eligible)
+                self.assertFalse(observed["message_exact"])
+                self.assertTrue(observed["message_string"])
+                self.assertTrue(observed["message_nonempty"])
+                self.assertEqual(error is None, eligible)
+                if eligible:
+                    self.assertEqual(result, (None, None))
+        for message in (None, "", " \t\n", 1, False, [], {}):
+            body = json.dumps(dict(unavailable()[1], message=message)).encode()
+            _, error, observed = self.observe(body)
+            self.assertIsNotNone(error)
+            self.assertFalse(observed["message_nonempty"])
 
     def test_nonobjects_and_all_json_types(self):
         for data, kind in [(None, "null"), ([], "array"), (HOSTILE, "string"),
@@ -113,7 +130,7 @@ class PackageResponseTests(unittest.TestCase):
                 _, error, observed = self.observe(body)
                 self.assertIsNotNone(error)
                 self.assertEqual(observed, snapshot(body_bytes_observed=len(body), json_type=kind,
-                                                   json_object=False, message_exact=False,
+                                                   json_object=False, message_exact=False, message_string=False, message_nonempty=False,
                                                    documentation_string=False, documentation_prefix=False))
 
     def test_status_is_observed_but_never_converted_to_absence(self):
@@ -137,7 +154,7 @@ class PackageResponseTests(unittest.TestCase):
                 self.assertIsNotNone(error)
                 self.assertEqual(observed, snapshot(body_bytes_observed=len(body), json_result=classification,
                                                    json_type="unknown", link_state="present", link_absent=False,
-                                                   json_object=None, message_exact=None,
+                                                   json_object=None, message_exact=None, message_string=None, message_nonempty=None,
                                                    documentation_string=None, documentation_prefix=None))
 
     def test_transport_failures_keep_only_available_observations(self):
@@ -149,7 +166,7 @@ class PackageResponseTests(unittest.TestCase):
                 self.assertEqual(observed, snapshot(
                     http_status=404 if headers else None, json_result="not_read", json_type="unknown",
                     link_state="empty" if headers else "unknown", link_absent=False if headers else None,
-                    json_object=None, message_exact=None, documentation_string=None, documentation_prefix=None))
+                    json_object=None, message_exact=None, message_string=None, message_nonempty=None, documentation_string=None, documentation_prefix=None))
 
     def test_connection_creation_and_close_failures_do_not_disclose_exceptions(self):
         with patch.object(r.http.client, "HTTPSConnection", side_effect=OSError(HOSTILE)):

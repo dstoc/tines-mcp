@@ -119,7 +119,13 @@ def write(path, value):
 
 
 sys.argv = [str(r.__file__), "publish", "--workflow", str(base), "--source", str(base), "--record", str(record)]
-with patch.object(r, "run", side_effect=command), patch.object(r, "source_version"), \
+# Exercise hypothetical admitted creation diagnostics downstream of production's
+# disabled gate. No environment input can perform this replacement in production.
+original_dispatch = r.dispatch
+def admitted(env):
+    return dict(original_dispatch(env), creation_eligible=True)
+
+with patch.object(r, "dispatch", side_effect=admitted), patch.object(r, "run", side_effect=command), patch.object(r, "source_version"), \
         patch.object(r, "resolve"), patch.object(r, "remote_tag"), \
         patch.object(r.http.client, "HTTPSConnection", Connection), \
         patch.object(r.Releases, "request", side_effect=release_request), patch.object(r, "write_json", side_effect=write):

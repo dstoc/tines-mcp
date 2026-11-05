@@ -95,8 +95,8 @@ class AutomaticDispatchTests(unittest.TestCase):
         return environment(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
                            RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success", **overrides)
 
-    def test_creation_is_derived_only_for_first_012_handoff(self):
-        self.assertTrue(r.dispatch(self.automatic())["creation_eligible"])
+    def test_no_handoff_can_renew_creation_authority(self):
+        self.assertFalse(r.dispatch(self.automatic())["creation_eligible"])
         for values in [dict(GITHUB_RUN_ATTEMPT="2"), dict(GITHUB_RUN_ATTEMPT=""),
                        dict(GITHUB_RUN_ATTEMPT="01"), dict(RELEASE_TAG="v0.1.0", RELEASE_VERSION="0.1.0"),
                        dict(RELEASE_TAG="v0.1.1", RELEASE_VERSION="0.1.1"),
@@ -371,7 +371,16 @@ class OrchestrationTests(unittest.TestCase):
     def pushes(self):
         return [c for c, *_ in self.commands if c[:2] == ("docker", "push")]
 
-    def first_handoff(self):
+    def admit_synthetic_creation(self):
+        # Hypothetical admitted creation, ONLY inside this offline fixture. Production
+        # dispatch is separately tested and can never return creation_eligible=True.
+        original = r.dispatch
+        def admitted(env):
+            return dict(original(env), creation_eligible=(env.get("GITHUB_EVENT_NAME") == "push"
+                        and env.get("GITHUB_RUN_ATTEMPT") == "1"))
+        gate = patch.object(r, "dispatch", side_effect=admitted)
+        gate.start()
+        self.addCleanup(gate.stop)
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
                           RELEASE_VERSION="0.1.2", RELEASE_PLEASE_RESULT="success")
         self.release.resolve()
@@ -432,7 +441,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.replies, before)
 
     def test_first_publication_acceptance_then_positive_access_recovery(self):
-        self.first_handoff()
+        self.admit_synthetic_creation()
         self.release.publish()
         self.replies += visible([version(tags=["0.1.2"])])
         self.release.accept()
@@ -533,7 +542,7 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(self.pushes(), [])
 
     def test_first_publication_preflight_errors_zero_pushes(self):
-        self.first_handoff()
+        self.admit_synthetic_creation()
         for reply in [(404, {}, None), (404, unavailable()[1], link()), (301, {}, None), (401, {}, None), (403, {}, None),
                       (429, {}, None), (503, {}, None), r.ReleaseError("transport")]:
             self.replies = [reply]
@@ -546,7 +555,7 @@ class OrchestrationTests(unittest.TestCase):
             self.replies = visible() + second
             with self.assertRaises(r.ReleaseError):
                 self.release.publish()
-        self.first_handoff()
+        self.admit_synthetic_creation()
         self.replies = [unavailable()] + visible()
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
@@ -599,7 +608,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(len(self.pushes()), 1)
 
     def test_post_creation_inaccessible_stops_recovery(self):
-        self.first_handoff()
+        self.admit_synthetic_creation()
         self.replies = [unavailable(), unavailable(), unavailable()]
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
@@ -618,7 +627,7 @@ class OrchestrationTests(unittest.TestCase):
                 self.commands.clear()
                 os.environ["GITHUB_RUN_ATTEMPT"] = "1"
                 self.fresh_record()
-                self.first_handoff()
+                self.admit_synthetic_creation()
                 self.fail_command = (lambda c: c[:2] == ("docker", "push")) if failure else None
                 self.push_output = "push completed without a digest"
                 with self.assertRaises(r.ReleaseError):
@@ -637,7 +646,7 @@ class OrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(self.pushes()), 1)
 
     def test_first_creation_pre_push_failure_has_no_ordinary_retry_allowance(self):
-        self.first_handoff()
+        self.admit_synthetic_creation()
         self.fail_command = lambda c: c[0] == "bash"
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
@@ -656,7 +665,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.pushes(), [])
 
     def test_first_handoff_reuses_visible_digest_without_build_or_new_attestations(self):
-        self.first_handoff()
+        self.admit_synthetic_creation()
         self.replies = visible([version(tags=["0.1.2"])]) * 2
         self.release.publish()
         self.signer = OLD_WORKFLOW
@@ -668,15 +677,15 @@ class OrchestrationTests(unittest.TestCase):
         self.assertFalse((self.release.record.parent / "release-identity.json").exists())
         self.assertFalse(any(c[:2] in [("docker", "build"), ("docker", "push")] for c, *_ in self.commands))
 
-    def test_visible_package_cannot_fall_back_to_unavailable_during_first_handoff(self):
-        self.first_handoff()
+    def test_visible_package_cannot_fall_back_to_unavailable_during_admit_synthetic_creation(self):
+        self.admit_synthetic_creation()
         self.replies = visible() + [unavailable()]
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
         self.assertEqual(self.pushes(), [])
 
     def test_local_image_change_before_first_push_stops_creation(self):
-        self.first_handoff()
+        self.admit_synthetic_creation()
         def change_image(command):
             if command[0] == "bash":
                 self.local_image_id = "replacement-local-image"
@@ -693,7 +702,7 @@ class OrchestrationTests(unittest.TestCase):
             with self.subTest(post=post):
                 self.commands.clear()
                 self.fresh_record()
-                self.first_handoff()
+                self.admit_synthetic_creation()
                 (self.base / "outputs").write_text("")
                 self.replies = [unavailable(), unavailable()] + post
                 with self.assertRaises(r.ReleaseError):
@@ -710,7 +719,7 @@ class OrchestrationTests(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 self.commands.clear()
                 self.fresh_record()
-                self.first_handoff()
+                self.admit_synthetic_creation()
                 self.release.publish()
                 self.fail_command = lambda c: c[:len(prefix)] == prefix
                 with self.assertRaises(r.ReleaseError):
@@ -865,7 +874,7 @@ class WorkflowTests(unittest.TestCase):
         triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["push", "workflow_dispatch"])
         self.assertNotIn("bootstrap", triggers)
-        self.assertEqual(re.findall(r"^      ([a-z_]+):", triggers, re.M), ["tag", "source_sha"])
+        self.assertEqual(re.findall(r"^      ([a-z_]+):", triggers, re.M), ["tag", "source_sha", "incident"])
         self.assertIn("group: tines-mcp-release\n  cancel-in-progress: false", workflow)
         permissions = workflow.split("\n  release:\n", 1)[1].split("    permissions:\n", 1)[1].split("    env:\n", 1)[0]
         self.assertEqual(set(permissions.splitlines()),

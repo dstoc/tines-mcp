@@ -13,6 +13,10 @@ on:
         description: Full expected source commit SHA
         type: string
         required: true
+      incident:
+        description: Incident validation selector (42010011054 recovery remains disabled)
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -70,6 +74,7 @@ jobs:
       RELEASE_DRAFT: ${{ needs.release-please.outputs.draft }}
       RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
       RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+      RELEASE_INCIDENT: ${{ inputs.incident }}
       RELEASE_PLEASE_RESULT: ${{ needs.release-please.result }}
     steps:
       - name: Initialize ephemeral Docker configuration

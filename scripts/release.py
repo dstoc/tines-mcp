@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GHCR release checks. Package creation is limited to the first genuine 0.1.2 handoff."""
+"""GHCR release checks. Unavailable-package creation is disabled pending separately reviewed authority."""
 
 import argparse
 import http.client
@@ -114,10 +114,12 @@ def dispatch(env):
         require(env.get("RELEASE_DRAFT") == "true" and
                 re.fullmatch(r"[1-9][0-9]*", env.get("RELEASE_ID", "")),
                 "Draft release ID handoff required")
-    # This allowance is not proof of absence: release authorization must establish
-    # authoritative owner absence, exclusive writers, and no unresolved prior push.
-    creation_eligible = (event == "push" and tag == "v0.1.2"
-                         and env.get("GITHUB_RUN_ATTEMPT") == "1")
+    selector = env.get("RELEASE_INCIDENT", "")
+    require(selector in ("", "42010011054"), "Unknown release incident")
+    require(not selector, "Incident 42010011054 recovery is disabled: original bytes, Actions read, "
+            "publication authority and a reviewed run opportunity remain unresolved")
+    # Historical handoffs and fresh attempt-1 dispatches confer no creation authority.
+    creation_eligible = False
     return dict(tag=tag, version=tag[1:], source_sha=sha, workflow_sha=env["GITHUB_SHA"],
                 platform="linux/amd64", creation_eligible=creation_eligible, image=f"{IMAGE}:{tag[1:]}",
                 actor=env.get("GITHUB_ACTOR"), actor_id=env.get("GITHUB_ACTOR_ID"),
@@ -163,6 +165,12 @@ def source_version(source, state):
             "Cargo.lock version mismatch")
 
 
+def message_shape(value):
+    message = value.get("message") if isinstance(value, dict) else None
+    return dict(message_exact=message == "Not Found", message_string=isinstance(message, str),
+                message_nonempty=isinstance(message, str) and bool(message.strip()))
+
+
 class Registry:
     def __init__(self, token, observe=None):
         require(bool(token), "Actions GITHUB_TOKEN required")
@@ -172,9 +180,10 @@ class Registry:
 
     def get(self, path):
         # Fixed TLS origin, no redirect following and no error-to-absence conversion.
-        snapshot = dict(schema_version=1, route="package_metadata", http_status=None,
+        snapshot = dict(schema_version=2, route="package_metadata", http_status=None,
                         body_bytes_observed=None, json_result="not_read", json_type="unknown",
                         link_state="unknown", json_object=None, message_exact=None,
+                        message_string=None, message_nonempty=None,
                         documentation_string=None, documentation_prefix=None, link_absent=None)
         connection = None
         try:
@@ -202,7 +211,7 @@ class Registry:
             obj = isinstance(data, dict)
             documentation = data.get("documentation_url") if obj else None
             snapshot.update(json_result="parsed", json_type=kind, json_object=obj,
-                            message_exact=obj and data.get("message") == "Not Found",
+                            **message_shape(data),
                             documentation_string=isinstance(documentation, str),
                             documentation_prefix=isinstance(documentation, str)
                             and documentation.startswith("https://docs.github.com/rest/"))
@@ -228,7 +237,7 @@ class Registry:
         status, package, link = self.get(PACKAGE)
         if status == 404 and allow_unavailable:
             require(isinstance(package, dict)
-                    and package.get("message") == "Not Found"
+                    and message_shape(package)["message_nonempty"]
                     and isinstance(package.get("documentation_url"), str)
                     and package["documentation_url"].startswith("https://docs.github.com/rest/")
                     and link is None,
@@ -639,6 +648,10 @@ class Release:
             return
         require(self.state["release_draft"] and not self.state.get("evidence_id"),
                 "Published release or retained evidence requires an existing image; no build authorized")
+        require(not (self.state["release_id"] == 435049346
+                     or (self.state["tag"] == "v0.1.2" and self.state["source_sha"] ==
+                         "bf97287109eaab863d26ed82307d31db7c3c6a71")),
+                "Exact incident image creation is disabled pending reviewed publication authority")
         build = ["docker", "build", "--platform", "linux/amd64", "--file", str(self.source / "Containerfile"),
                  "--tag", self.state["image"]]
         for key, value in labels(self.state).items():
