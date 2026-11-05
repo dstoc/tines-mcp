@@ -1,267 +1,159 @@
 # Adapter image releases
 
 The release workflow publishes one `linux/amd64` adapter image at
-`ghcr.io/dstoc/tines-mcp:X.Y.Z`. It records the source commit and image digest and
-verifies signed provenance, signed release identity, and the container runtime.
-It publishes no floating tags or CLI archives. Release Please maintains a reviewed
-version/changelog PR and creates its source tag and GitHub Release after merge.
-The same workflow run passes that exact version and source SHA to the existing
-container publisher. A source GitHub Release does not establish image acceptance.
-This guide describes the prepared workflow; it is not evidence that a version has been published.
+`ghcr.io/dstoc/tines-mcp:X.Y.Z`. It records the source commit and image digest,
+then verifies signed provenance, signed release identity, anonymous pull, and
+container runtime. Release Please maintains a reviewed version/changelog PR.
+After that PR is separately authorized and merged, Release Please creates its
+source tag and GitHub Release and passes the exact version and source SHA to
+the publisher in the same run. A source release does not establish image acceptance.
 
-The image runs the adapter as `10001:10001`. The tunnel client remains a separate
-container. Release checks establish container liveness and clean shutdown, not
-live Tines permissions, the final API inventory, or intended-client tunnel access.
-See the selected source commit's README for its supported tools.
+The adapter runs as `10001:10001`. The tunnel client stays in a separate container.
+There are no floating tags or CLI archives. Runtime acceptance establishes
+liveness and clean shutdown; it does not establish live Tines permissions or
+intended-client tunnel access. See the selected source commit's README for tools.
+This guide describes the workflow, not evidence of a completed publication.
 
-## Normal releases
+## First real release: 0.1.1
 
-Before the first normal release, the owner must complete the separate `0.1.0`
-bootstrap below and establish package access. Normal automation cannot bootstrap.
-
-1. Use conventional commit subjects on `main`, such as `fix:` or `feat:`. On each
-   main push, Release Please creates or updates one release PR for the root Rust
-   package. Review `Cargo.toml`, `Cargo.lock`, `.release-please-manifest.json`, and
-   `CHANGELOG.md` together. Dependency versions must stay unchanged unless a
-   separate reviewed change updates them.
-2. Approve bot-created or updated PR workflow runs when GitHub shows **Approve
-   workflows to run**. Review the final PR head after each bot update. Require
-   normal CI and independent review before merging. There is no auto-merge or
-   workflow self-approval.
-3. Merge the reviewed release PR to authorize its normal release. Release Please
-   creates stable `vX.Y.Z` source identity and changelog notes, then hands its
-   `release_created`, `tag_name`, `version`, and `sha` outputs to the publishing
-   job in the same run. A PR-only update does not publish. Automatic publication
-   always uses `normal` mode and independently checks the tag, ancestry and Cargo
-   versions. Do not dispatch a second publication for a successful run.
-4. Check and retain the image acceptance record below before deploying its digest.
-   If source release creation or publication fails, inspect the source records
-   and use explicit normal recovery. Do not assume a rerun emits release outputs.
+[Release PR #34](https://github.com/dstoc/tines-mcp/pull/34) prepares the first
+`0.1.1` release. Keep it unmerged while tines-mcp/37's publishing change passes
+independent review. Normal code review does not authorize a release. The separate
+owner-only `0.1.0` bootstrap prerequisite from tines-mcp/31, /35, and /36 is
+superseded by tines-mcp/37. No bootstrap dispatch, dummy package, or `v0.1.0`
+publication is required.
 
 The checked-in `0.1.0` manifest and `bootstrap-sha` (`2e2af44`) seed version and
-changelog history only. They do not claim that `0.1.0` is published. Release Please
-uses its native single-crate Rust updater; no workspace or CLI archive flow runs.
-`CHANGELOG.md` is created with the first release PR.
+changelog history only. They do not claim publication. The preparatory commit's
+`Release-As: 0.1.1` body footer requested PR #34; do not add a persistent
+`release-as` override or repeat preparation.
 
-GitHub suppresses tag-push workflows for tags created with `GITHUB_TOKEN`. This
-flow uses a same-run dependency, not a tag-triggered workflow or a second dispatch.
-See [GitHub's token-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+Before separately authorizing the first release PR merge, the owner must:
 
-## Prepare the initial 0.1.1 release PR
+1. Verify the exact `dstoc/tines-mcp` container package is absent in an
+   authoritative owner view. An inaccessible view or empty access-filtered
+   namespace listing is insufficient.
+2. Inspect earlier publication evidence and establish that no prior push remains
+   unresolved. Missing logs or a missing digest do not prove no push occurred.
+3. Exclude all other package creators and writers for the whole publication run.
+4. Review the final release PR head, require CI and independent review, and check
+   the synchronized `Cargo.toml`, `Cargo.lock`, `.release-please-manifest.json`,
+   and `CHANGELOG.md`. Dependency identities must stay unchanged unless separately
+   reviewed. Then separately authorize the release PR merge and its publication.
 
-The initial automation commit uses `ci:`, which does not create a release
-candidate. The pinned action bundles Release Please 17.3.0, whose
-[commit-body `Release-As` mechanism](https://github.com/googleapis/release-please/blob/v17.3.0/README.md#how-do-i-change-the-version-number)
-can request the first `0.1.1` PR from the `0.1.0` seed. Keep the seed,
-`bootstrap-sha`, workflow, permissions, and publishing safeguards unchanged.
+These are namespace and release-authorization checks. They create no image and
+require no credential change. If the owner cannot establish them, do not release.
+Proposal and implementation reviews do not establish these operational facts.
 
-1. Independently review the preparatory docs and regression-test change. Use
-   this conventional title and final squash message:
+The helper derives creation eligibility only for a successful `main` push
+handoff with `release_created=true`, exact tag/version `v0.1.1`/`0.1.1`, and
+`GITHUB_RUN_ATTEMPT=1`. It independently verifies the source tag, ancestry, Cargo
+manifest, lockfile, and release outputs. Callers cannot select a creation mode.
+Manual dispatches, attempts after 1, and all other versions require positive
+package access.
 
-   ```text
-   chore: prepare initial 0.1.1 release PR
+Only within that allowance can the exact authenticated package metadata route's
+structured `404 Not Found`, without pagination, permit creation. The helper
+records this as **unavailable**, not absent. It requires the same observation
+immediately before its sole push. If the package becomes accessible before push,
+it stops; restart through positive-access recovery. A package accessible at the
+initial check follows ordinary identity validation and complete version
+enumeration. If the version exists, it reuses that digest without replacement.
 
-   Document the initial release PR checks and preserve the owner-only 0.1.0 bootstrap.
-   Refs: tines-mcp/36
+[GitHub can return 404 for insufficient permission](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api#failed-login-limit).
+A hidden existing package can return the identical 404. Successful Docker login
+and mocked tests cannot resolve that ambiguity. The no-overwrite guarantee on
+this path depends on the owner's authoritative absence check and exclusive
+writers; GHCR provides no atomic conditional tag write in this flow. Unexpected
+401/403/429/5xx, redirects, malformed or oversized responses, transport failures,
+and version-list 404s never authorize creation.
 
-   Release-As: 0.1.1
-   ```
+After creation, positive package metadata, repository association, complete
+version enumeration, and the returned digest are mandatory before signing.
+[GitHub creates packages as private by default](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+The owner must separately [make the package public](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+if anonymous acceptance fails for visibility. Recover using the same signed
+digest after that action. The workflow does not change visibility or credentials.
+If its token cannot read the new package, investigate repository association and
+Actions access; a 404 does not reopen creation. Remove the bounded creation
+allowance through a reviewed follow-up after first publication.
 
-2. Preserve the literal, unindented footer at the end of the preparatory PR
-   body, outside a code fence, and in the branch commit body. The repository
-   permits squash merges only and defaults to `PR_TITLE` / `PR_BODY`; a branch
-   footer alone can be lost. Before merging, recheck main, pending release PRs,
-   normal CI, independent review, and the actual squash message. With the CLI,
-   supply the reviewed subject and body explicitly:
+## Later releases and authority
 
-   ```sh
-   gh pr merge <preparatory-pr-number> -R dstoc/tines-mcp --squash \
-     --match-head-commit <reviewed-head-sha> \
-     --subject 'chore: prepare initial 0.1.1 release PR' --body-file <reviewed-body-file>
-   gh api repos/dstoc/tines-mcp/commits/<squash-sha> --jq .commit.message
-   ```
+Use conventional commit subjects such as `fix:` and `feat:` on `main`. Release
+Please updates one Rust release PR. Review the four version/changelog files
+together and approve bot PR workflow runs when GitHub requires it. Require CI
+and independent review before separately authorizing the release PR merge.
+The workflow does not approve or auto-merge PRs. A PR-only update does not publish.
+Do not dispatch a second publication for a successful run. Retain the accepted
+digest record before deploying.
 
-   Confirm that the merged message contains `Release-As: 0.1.1` as a separate
-   body line. The footer in this guide does not trigger a release. Do not add
-   a persistent `release-as` configuration override.
+Repository policy must permit Actions to create pull requests and use the pinned
+checkout, Rust toolchain, attestation, and artifact-upload actions. If policy
+blocks them, ask the owner to resolve it. Do not introduce a PAT or change settings
+from the workflow. Release Please uses ephemeral `GITHUB_TOKEN` with
+`contents: write`, `issues: write`, and `pull-requests: write`; these capabilities
+stay isolated from publication.
 
-3. Inspect the `release.yml` push run with the exact preparatory squash SHA,
-   then inspect the generated PR:
+The publisher uses its ephemeral Actions token with `contents: read`,
+`packages: write`, `attestations: write`, and `id-token: write`. Artifact storage
+record creation is disabled for this personal-account repository. The workflow
+needs no Tines token, PAT, `artifact-metadata` permission, or administration access.
+Ephemeral authenticated Docker configuration is removed unconditionally.
+Anonymous pulls use a separate temporary configuration without credentials.
 
-   ```sh
-   gh run list -R dstoc/tines-mcp --workflow release.yml --event push \
-     --json databaseId,headSha,status,conclusion,url
-   gh run view <run-id> -R dstoc/tines-mcp
-   gh pr list -R dstoc/tines-mcp --base main --state open \
-     --label 'autorelease: pending' --json number,title,url,headRefName
-   gh pr diff <release-pr-number> -R dstoc/tines-mcp
-   gh release list -R dstoc/tines-mcp
-   ```
+For an established package, the job's token must read
+`GET /users/dstoc/packages/container/tines-mcp`, validate its owner/repository
+identity, and enumerate every active version page. Only complete enumeration
+inside that positively accessible package can establish an absent version tag.
+A 404 stops ordinary publication and recovery. Successful login does not prove
+metadata or enumeration authority. Local fixtures do not establish live token
+behavior; retain that evidence in the separately authorized first publication.
 
-   Expect exactly one pending release PR, normally titled
-   `chore(main): release 0.1.1`, with these four updates:
+Restrict source-tag and package writers throughout every run. Workflow concurrency
+serializes its own runs; external publishers can still race the immediate
+pre-push and final checks. If other writers cannot be excluded, do not authorize
+a release or dispatch. Request a reviewed authority change.
 
-   | File | Expected change |
-   | --- | --- |
-   | `Cargo.toml` | Package version becomes `0.1.1`; dependencies stay unchanged. |
-   | `Cargo.lock` | Only the local `tines-mcp` version becomes `0.1.1`; dependency versions, sources, checksums, and edges stay unchanged. |
-   | `.release-please-manifest.json` | Root version becomes `0.1.1`. |
-   | `CHANGELOG.md` | First `0.1.1` entry uses history after the bootstrap boundary, including the preparatory chore. |
+## Explicit recovery
 
-   Confirm Release Please succeeded, the publisher was skipped, and no
-   unexpected source release was created. Record the squash SHA, run URL,
-   release PR URL, and inspection results in tines-mcp/36. A successful job
-   alone does not prove the release PR exists.
-
-If no PR appears, inspect the job log, actual commit footer, pending release
-PRs, and Actions PR-creation policy. Report denied access as a blocked
-prerequisite. Do not change credentials, repository settings, or publication
-conditions. Do not dispatch `release.yml` to create a PR; its manual entry
-point publishes or recovers an image.
-
-Leave the generated release PR open for separate review and authorization.
-This preparatory change does not authorize its approval or merge, a `v0.1.1`
-tag or source release, bootstrap execution, or publication. Before later normal
-`0.1.1` publication, the owner must complete the separate owner-confirmed
-`0.1.0` GHCR bootstrap below and establish package access. Merging the generated
-release PR can create a source release and start normal publication.
-
-## Owner setup before publication
-
-No real release, tag, release PR merge, or publishing dispatch belongs to
-implementation or review of this automation.
-
-Repository policy must permit GitHub Actions to create pull requests. An owner
-can check **Settings → Actions → General → Workflow permissions → Allow GitHub
-Actions to create and approve pull requests**. The workflow never approves PRs.
-If policy blocks PR creation or required checks, ask the owner to resolve it;
-do not introduce a PAT or change settings from the workflow. Policy permission
-was not verified during preparation (the read-only API lookup returned 403).
-
-The Release Please job uses only ephemeral `GITHUB_TOKEN` with `contents: write`,
-`issues: write` (release labels), and `pull-requests: write`, as required by the
-[pinned action](https://github.com/googleapis/release-please-action/tree/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071).
-These capabilities are isolated from the publishing job.
-
-The repository must permit the pinned Release Please, checkout, Rust toolchain,
-attestation, and artifact-upload actions. The publication job uses only its
-ephemeral Actions `GITHUB_TOKEN`, with `contents: read`, `packages: write`, `attestations: write`, and
-`id-token: write`. Repository policy must permit those capabilities and GitHub
-artifact attestations. The workflow does not need a PAT, a Tines token,
-`artifact-metadata` permission, or repository administration permission. Storage
-record creation is explicitly disabled for this personal-account repository.
-No workflow step changes credentials, visibility, or repository settings.
-
-Restrict tag and package writers and arrange exclusive publication for the whole
-run. The workflow serializes its own runs and checks the remote source tag and
-registry immediately before pushing and at completion. GHCR has no conditional
-tag write in this flow. An external publisher can race those checks. If other
-writers cannot be excluded, **do not merge a release PR or dispatch**. Request a
-reviewed authority change. Tag protections and digest pins remain necessary outside the workflow.
-
-For an established package, this job's token must obtain the exact package at
-`GET /users/dstoc/packages/container/tines-mcp`, including its repository
-association, and enumerate **every active version page**. An access-filtered
-namespace listing, anonymous reads, or the runner's token cannot replace these
-checks. Authentication, transport, rate-limit, malformed-response, pagination,
-and package identity errors stop publication. A 404 never means absence in
-normal mode. A complete enumeration can establish that a tag is absent only
-inside the positively accessible package.
-
-GitHub normally creates a new package as private. After first creation, the owner
-must explicitly make it public in the package settings. This is a separate
-operator action. Anonymous digest pull must succeed before acceptance. If the
-job cannot read the new package with its own token, investigate the package's
-repository association and Actions access. A successful GHCR login does not
-prove package read or enumeration authority. Record the actual token behavior
-in the first separately authorized publication; local tests do not establish it.
-
-## Manual source preparation for bootstrap or recovery
-
-Normal releases use the release PR above. For the owner-only first `0.1.0`
-publication, review the existing `0.1.0` Cargo versions and normal CI, choose the
-exact reviewed source commit, and create an annotated `v0.1.0` tag for it as a
-separately authorized owner action. This automation does not perform that setup.
-
-For recovery, retain the existing source tag and GitHub Release. Record the full
-lowercase 40-character source SHA. It must match the tag and be an ancestor of
-the selected `main` workflow commit. Never move a release tag. Source and workflow
+Retain the existing source tag and GitHub Release. Record the full lowercase
+40-character source SHA, which must match the tag and be an ancestor of the
+selected `main` workflow commit. Never move a release tag. Source and workflow
 commits can differ when recovering with a reviewed workflow fix.
 
-The workflow uses release helpers from its own `main` checkout. It checks out the
-resolved source SHA separately and builds only that directory. Cargo metadata
-and the lockfile must agree with the tag. The source container is built once,
-loaded locally, and tested before the same image is pushed.
+The helper comes from its own `main` checkout and builds a separate exact source
+checkout. Cargo metadata and the lockfile must match the tag. It builds once,
+checks platform/user/labels and runtime locally, then pushes those same bytes once.
 
-## Dispatch normal recovery for an established package
-
-Use **Actions → release → Run workflow**, with `main` selected. Set:
-
-- `tag`: the existing `vX.Y.Z` source tag.
-- `source_sha`: its full expected source commit SHA.
-- `mode`: `normal` (the default).
-- `bootstrap_confirmation`: leave empty.
-
-The equivalent explicit command is:
+Use **Actions → release → Run workflow**, select `main`, and supply only the
+existing tag and full expected source SHA:
 
 ```sh
 gh workflow run release.yml --repo dstoc/tines-mcp --ref main \
-  -f tag=v0.1.0 -f source_sha=REPLACE_WITH_FULL_SOURCE_SHA -f mode=normal
+  -f tag=v0.1.1 -f source_sha=REPLACE_WITH_FULL_SOURCE_SHA
 ```
 
-If the tag is absent from a positively accessible package, the workflow builds,
-checks, and pushes it once. If the tag already exists, it selects that digest
-without rebuilding, pushing, retagging, or generating new attestations. Reuse
-requires both valid signed statements, matching release fields and OCI labels,
-and runtime acceptance. A different or incomplete image stops recovery.
+This command can publish if the version is absent from an accessible package.
+Run it only with separate publication/recovery authorization. There is no mode
+or owner-confirmation input. Direct helper calls reject obsolete mode and
+confirmation values.
 
-## First publication only: owner-confirmed bootstrap
-
-Bootstrap is a temporary exception for the currently nonexistent package. The
-owner's November 5 observation is design evidence; it is **not** a fresh dispatch
-confirmation. Bootstrap is limited to `v0.1.0` / `0.1.0` and owner `dstoc`, numeric
-actor ID `539597`. Both the initiating and triggering actor must be `dstoc` and
-the run attempt must be `1`. Do not use GitHub's rerun button for bootstrap.
-
-Before **each** bootstrap dispatch, the owner must:
-
-1. Inspect the exact `dstoc/tines-mcp` package while signed in as `dstoc` and
-   confirm it is still absent. An inaccessible owner view is not sufficient.
-2. Inspect earlier publication runs. Confirm that no prior push remains
-   unresolved. Missing logs or a missing digest do not prove no push occurred.
-3. Exclude all other package creators and writers for this attempt.
-4. Bind the confirmation to the reviewed source SHA by entering this exact input
-   on a new dispatch from `main`, with `mode=bootstrap` and `tag=v0.1.0`:
-
-```text
-CREATE ghcr.io/dstoc/tines-mcp:0.1.0 FROM <full-source-sha>; OWNER CHECKED PACKAGE ABSENT; NO UNRESOLVED PRIOR PUSH
-```
-
-Replace `<full-source-sha>` with the same SHA as `source_sha`. Do not add a newline
-or spaces at either end. This input records the owner's fresh checks. It grants
-no registry atomicity.
-
-The workflow must authenticate successfully and receive a structured 404 from
-the exact authenticated package route, both initially and immediately before
-push. That response **does not prove absence**: an inaccessible existing package
-can produce the same result. The fresh owner confirmation and reviewed exception
-supply bootstrap authority. A visible package or any other result stops
-bootstrap. It never switches automatically from normal to bootstrap.
-
-After a push is attempted, even if Docker returns an error, bootstrap is closed
-pending investigation. Use a **new normal dispatch** for recovery. Only proof
-that the prior run never attempted a push permits a new bootstrap dispatch with
-fresh checks. A created or possibly created package, later deletion, lost access,
-or a later 404 does not reopen bootstrap. Once the package is established,
-remove this option through a small reviewed follow-up, even if public acceptance
-is still blocked. No persistent latch or additional credential is installed.
+An existing version selects its digest with zero builds, pushes, retags, or new
+attestations. Both signed statements, source identity, OCI labels, anonymous pull,
+and runtime must pass. An incomplete or conflicting image stops recovery.
+A still-absent package cannot be created by manual dispatch or an ordinary rerun,
+even when the first attempt failed before pushing. Preserve proof of no push
+and request a narrowly reviewed workflow adjustment for another creation attempt.
+Do not use the superseded `0.1.0` bootstrap. Release Please might not re-emit
+release outputs on rerun; missing outputs confer no authority.
 
 ## Read and retain release evidence
 
 Every run attempts to upload `adapter-release-<run-id>-<attempt>` with a 90-day
 retention period. `record.json` and the job summary include the tag, version,
-source SHA, orchestration SHA, run URL, mode, actor/confirmation, package ID,
-image digest, current operation, and acceptance result. Successful verification
+source SHA, orchestration SHA, run URL, actor, run attempt, creation eligibility,
+initial/pre-push package observations, package ID, image digest, current operation, and acceptance result. Successful verification
 also retains the CLI's verified provenance and identity output. Copy successful
 records into durable release records before Actions artifacts expire. An
 interrupted run may fail to upload evidence; treat missing evidence as uncertain.
@@ -270,8 +162,8 @@ The main stages are:
 
 | Stage | Evidence and next action |
 | --- | --- |
-| `no_push_attempted` | This run has not dispatched a push. Correct the failure; apply fresh bootstrap checks if still eligible. |
-| `push_attempted_outcome_uncertain` | A push was dispatched, but its result is not established. Investigate in normal mode only. |
+| `no_push_attempted` | This record has no push dispatch. Inspect all prior evidence. Recovery requires positive package access; a still-absent package needs a narrowly reviewed creation adjustment. |
+| `push_attempted_outcome_uncertain` | A push was dispatched, but its result is not established. Investigate through positive-access recovery only. |
 | `digest_observed` | A digest was selected or returned by a push. Publication can be partial; acceptance is incomplete. |
 | `identity_verified` | Both signed statements match. Public pull/runtime or final consistency checks can still fail. |
 | `public_runtime_acceptance_complete` | Anonymous digest pull, platform/user/labels, health 204, shutdown zero, and final registry/tag checks passed. |
@@ -318,7 +210,7 @@ checks during publication and recovery.
 A source GitHub Release or tag can exist even if the Release Please action fails
 before returning outputs, or the publishing job fails or never starts. Inspect
 those records and preserve them. Fix workflow problems through review, then use
-the explicit normal dispatch above with the same tag and source SHA. Disabling
+the explicit recovery dispatch above with the same tag and source SHA. Disabling
 the main-push Release Please job stops future automation; manual dispatch remains
 available. Reverting automation cannot undo created source or image records.
 
@@ -328,13 +220,15 @@ workflow green. Do not rebuild an existing version: mutable base images and
 package repositories can change its bytes.
 
 - **Before any push:** fix the source, workflow, or access problem through normal
-  review. A changed release source needs a new version/tag. Bootstrap requires
-  proof that no earlier push was attempted and all fresh owner checks.
+  review. A changed release source needs a new version/tag. If the package is
+  still absent, preserve proof of no push and request a narrowly reviewed
+  creation adjustment. Ordinary reruns and dispatches cannot reopen creation.
 - **Ambiguous push, post-push lookup failure, or missing evidence:** investigate
-  as partial/uncertain publication. Use normal mode only. A package 404 or denied
-  enumeration requires owner investigation, not another bootstrap.
+  as partial/uncertain publication. Recovery requires positive package access.
+  A package 404 or denied enumeration requires owner investigation. Deletion,
+  lost access, or a later 404 does not reopen creation.
 - **Valid matching image, visibility-only failure:** the owner can make the
-  package public. Dispatch normal mode with the same tag/source. It verifies and
+  package public. Dispatch recovery with the same tag/source. It verifies and
   tests the existing digest, with zero replacement writes or new attestations.
 - **Incomplete attestations, conflicting source/labels/digest, or runtime
   failure:** investigate outside automated recovery. Automation will not add
@@ -361,14 +255,15 @@ adapter image contains no tunnel agent or process supervisor.
 
 ## Local verification
 
-Run these checks from the repository root with Node.js 24 (or later) and the pinned
-Rust toolchain:
+Run these checks from the repository root with Node.js 24 (or later), actionlint
+1.7.12 (the CI pin), and the pinned Rust toolchain:
 
 ```sh
 npm ci --prefix tests/release-please --ignore-scripts
 npm test --prefix tests/release-please
 python3 -m unittest discover -s tests/release -v
 bash -n scripts/container-smoke.sh
+actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
@@ -380,7 +275,9 @@ Release tests mock registry/engine commands and test the actual shared shell
 script. The Node suite runs Release Please 17.3.0 (bundled in the pinned action)
 against a read-only fake GitHub client and evaluates actual workflow expressions.
 It checks synchronized versions, unchanged dependencies, no-release updates,
-malformed handoffs, skipped/failed jobs, and manual-only bootstrap. These tests do
-not publish or establish live Actions-token authority. CI keeps the Rust suite and real container build/runtime check. A separately authorized
+malformed handoffs, skipped/failed jobs, first-attempt eligibility, and strict
+recovery. These tests do not publish or establish live Actions-token authority. actionlint checks actual
+workflow syntax and Actions contexts. CI keeps these checks, the Rust suite, and
+the real container build/runtime check. A separately authorized
 live publication must still establish GHCR access, both signed statements,
 anonymous pull, and runtime acceptance.

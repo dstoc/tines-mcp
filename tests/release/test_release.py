@@ -24,8 +24,7 @@ DIGEST, OTHER = "sha256:" + "1" * 64, "sha256:" + "2" * 64
 def environment(**overrides):
     result = dict(GITHUB_REPOSITORY=r.REPO, GITHUB_EVENT_NAME="workflow_dispatch",
                   GITHUB_REF="refs/heads/main", GITHUB_SHA=WORKFLOW_SHA,
-                  RELEASE_TAG="v0.1.0", RELEASE_SOURCE=SOURCE_SHA, RELEASE_MODE="normal",
-                  BOOTSTRAP_CONFIRMATION="", GITHUB_ACTOR="dstoc", GITHUB_ACTOR_ID="539597",
+                  RELEASE_TAG="v0.1.1", RELEASE_SOURCE=SOURCE_SHA, GITHUB_ACTOR="dstoc", GITHUB_ACTOR_ID="539597",
                   GITHUB_TRIGGERING_ACTOR="dstoc", GITHUB_RUN_ATTEMPT="1", GITHUB_RUN_ID="123",
                   GH_TOKEN="test-only-token")
     result.update(overrides)
@@ -41,7 +40,8 @@ def version(identifier=1, digest=DIGEST, tags=None):
     return dict(id=identifier, name=digest, metadata=dict(container=dict(tags=tags or [])))
 
 
-def absent():
+def unavailable():
+    # An absent package and a hidden package can return this identical response.
     return 404, dict(message="Not Found", documentation_url="https://docs.github.com/rest/packages/packages"), None
 
 
@@ -68,13 +68,13 @@ def verified(state, predicate_type=r.PREDICATE, signer=WORKFLOW_SHA):
 
 
 class DispatchTests(unittest.TestCase):
-    def test_valid_and_bootstrap(self):
-        self.assertEqual(r.dispatch(environment())["version"], "0.1.0")
-        self.assertEqual(r.dispatch(environment(RELEASE_MODE="bootstrap",
-                         BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA)))["mode"], "bootstrap")
+    def test_manual_dispatch_requires_positive_access(self):
+        state = r.dispatch(environment())
+        self.assertEqual(state["version"], "0.1.1")
+        self.assertFalse(state["creation_eligible"])
 
     def test_dispatch_gates(self):
-        for field, value in [("GITHUB_REPOSITORY", "other/tines-mcp"), ("GITHUB_REF", "refs/tags/v0.1.0"),
+        for field, value in [("GITHUB_REPOSITORY", "other/tines-mcp"), ("GITHUB_REF", "refs/tags/v0.1.1"),
                              ("GITHUB_EVENT_NAME", "pull_request"), ("RELEASE_SOURCE", "main"),
                              ("RELEASE_SOURCE", "a" * 39), ("GITHUB_SHA", "main"),
                              ("RELEASE_TAG", "v01.1.0"), ("RELEASE_TAG", "v1.2.3-rc.1"),
@@ -83,37 +83,40 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaises(r.ReleaseError):
                 r.dispatch(environment(**{field: value}))
 
-    def test_bootstrap_owner_rerun_and_confirmation_gates(self):
-        base = environment(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA))
-        for field, value in [("GITHUB_ACTOR_ID", "123"), ("GITHUB_ACTOR", "other"),
-                             ("GITHUB_TRIGGERING_ACTOR", "other"), ("GITHUB_RUN_ATTEMPT", "2"),
-                             ("RELEASE_TAG", "v0.2.0"), ("RELEASE_SOURCE", "d" * 40),
-                             ("BOOTSTRAP_CONFIRMATION", ""), ("BOOTSTRAP_CONFIRMATION", r.confirmation(SOURCE_SHA) + " ")]:
-            with self.subTest(field=field), self.assertRaises(r.ReleaseError):
-                r.dispatch(dict(base, **{field: value}))
+    def test_obsolete_mode_and_confirmation_are_rejected(self):
+        for values in [dict(RELEASE_MODE="normal"), dict(RELEASE_MODE="bootstrap"),
+                       dict(BOOTSTRAP_CONFIRMATION="old owner confirmation")]:
+            with self.subTest(values=values), self.assertRaises(r.ReleaseError):
+                r.dispatch(environment(**values))
 
 
 class AutomaticDispatchTests(unittest.TestCase):
     def automatic(self, **overrides):
         return environment(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                           RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="success", **overrides)
+                           RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success", **overrides)
 
-    def test_normal_handoff(self):
-        self.assertEqual(r.dispatch(self.automatic())["mode"], "normal")
+    def test_creation_is_derived_only_for_first_011_handoff(self):
+        self.assertTrue(r.dispatch(self.automatic())["creation_eligible"])
+        for values in [dict(GITHUB_RUN_ATTEMPT="2"), dict(GITHUB_RUN_ATTEMPT=""),
+                       dict(GITHUB_RUN_ATTEMPT="01"), dict(RELEASE_TAG="v0.1.0", RELEASE_VERSION="0.1.0"),
+                       dict(RELEASE_TAG="v0.1.2", RELEASE_VERSION="0.1.2")]:
+            with self.subTest(values=values):
+                self.assertFalse(r.dispatch(dict(self.automatic(), **values))["creation_eligible"])
+
 
     def test_handoff_failures(self):
         base = self.automatic()
         for field, values in {
             "RELEASE_CREATED": ["", "false", "TRUE", "True"],
             "RELEASE_PLEASE_RESULT": ["", "failure", "cancelled", "skipped"],
-            "RELEASE_VERSION": ["", "0.2.0", "0.1.0-rc.1", "0.1.0\n"],
+            "RELEASE_VERSION": ["", "0.2.0", "0.1.1-rc.1", "0.1.1\n"],
             "RELEASE_SOURCE": ["", "a" * 39, "A" * 40, "main"],
-            "RELEASE_TAG": ["", "v0.1.0-rc.1", "v01.1.0"],
+            "RELEASE_TAG": ["", "v0.1.1-rc.1", "v01.1.0"],
             "GITHUB_REPOSITORY": ["other/repo"],
-            "GITHUB_REF": ["refs/heads/other", "refs/tags/v0.1.0"],
+            "GITHUB_REF": ["refs/heads/other", "refs/tags/v0.1.1"],
             "GITHUB_EVENT_NAME": ["release", "pull_request"],
             "RELEASE_MODE": ["bootstrap"],
-            "BOOTSTRAP_CONFIRMATION": [r.confirmation(SOURCE_SHA)],
+            "BOOTSTRAP_CONFIRMATION": ["obsolete confirmation"],
         }.items():
             for value in values:
                 with self.subTest(field=field, value=value), self.assertRaises(r.ReleaseError):
@@ -121,17 +124,17 @@ class AutomaticDispatchTests(unittest.TestCase):
         # Even the confirmed owner cannot bootstrap from a push.
         with self.assertRaises(r.ReleaseError):
             r.dispatch(dict(base, RELEASE_MODE="bootstrap",
-                            BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA)))
+                            BOOTSTRAP_CONFIRMATION="obsolete confirmation"))
 
 
 class RegistryTests(unittest.TestCase):
-    def lookup(self, replies, bootstrap=False):
+    def lookup(self, replies, allow_unavailable=False):
         with patch.object(r.Registry, "get", side_effect=replies):
-            return r.Registry("test").lookup("0.1.0", bootstrap)
+            return r.Registry("test").lookup("0.1.1", allow_unavailable)
 
     def test_positive_access_and_absent_tag(self):
         self.assertEqual(self.lookup(visible()), (17, None))
-        self.assertEqual(self.lookup(visible([version(tags=["0.1.0"])])), (17, DIGEST))
+        self.assertEqual(self.lookup(visible([version(tags=["0.1.1"])])), (17, DIGEST))
 
     def test_http_errors_never_mean_absence(self):
         for status in [301, 401, 403, 404, 429, 500, 503]:
@@ -140,35 +143,53 @@ class RegistryTests(unittest.TestCase):
             with self.subTest(version_status=status), self.assertRaises(r.ReleaseError):
                 self.lookup([(200, package(), None), (status, {}, None)])
 
-    def test_bootstrap_requires_structured_exact_route_404(self):
-        with patch.object(r.Registry, "get", return_value=absent()) as get:
-            self.assertEqual(r.Registry("test").lookup("0.1.0", True), (None, None))
+    def test_creation_allowance_requires_structured_exact_route_404(self):
+        with patch.object(r.Registry, "get", return_value=unavailable()) as get:
+            self.assertEqual(r.Registry("test").lookup("0.1.1", True), (None, None))
             get.assert_called_once_with(r.PACKAGE)
-        for response in [(200, package(), None), (404, {}, None), (404, "Not Found", None),
+        for response in [(404, {}, None), (404, unavailable()[1], link()), (404, unavailable()[1], ""), (404, "Not Found", None),
                          (404, dict(message="Not Found", documentation_url="https://evil.example/"), None),
                          *[(s, {}, None) for s in [401, 403, 429, 500, 503]]]:
             with self.subTest(response=response), self.assertRaises(r.ReleaseError):
                 self.lookup([response], True)
+
+    def test_creation_allowance_keeps_positive_access_enumeration(self):
+        self.assertEqual(self.lookup(visible(), True), (17, None))
+        self.assertEqual(self.lookup(visible([version(tags=["0.1.1"])]), True), (17, DIGEST))
+        for status in [301, 401, 403, 404, 429, 500, 503]:
+            with self.subTest(status=status), self.assertRaises(r.ReleaseError):
+                self.lookup([(200, package(), None), (status, unavailable()[1], None)], True)
 
     def test_authentication_and_transport_fail_closed(self):
         with self.assertRaises(r.ReleaseError):
             r.Registry("")
         for fail in [OSError("offline"), r.http.client.HTTPException("offline")]:
             with patch.object(r.http.client.HTTPSConnection, "request", side_effect=fail), self.assertRaises(r.ReleaseError):
-                r.Registry("test").lookup("0.1.0")
+                r.Registry("test").lookup("0.1.1")
 
     def test_fixed_api_origin_no_redirect_and_malformed_json(self):
         with patch.object(r.http.client, "HTTPSConnection") as connection:
             response = connection.return_value.getresponse.return_value
             response.status, response.read.return_value = 302, b'{}'
             with self.assertRaises(r.ReleaseError):
-                r.Registry("test").lookup("0.1.0")
+                r.Registry("test").lookup("0.1.1")
             connection.assert_called_once_with("api.github.com", timeout=60)
             self.assertEqual(connection.return_value.request.call_args.args[:2], ("GET", r.PACKAGE))
             self.assertEqual(connection.return_value.request.call_args.kwargs["headers"]["Authorization"], "Bearer test")
             response.read.return_value = b'not json'
             with self.assertRaises(r.ReleaseError):
-                r.Registry("test").lookup("0.1.0", True)
+                r.Registry("test").lookup("0.1.1", True)
+
+    def test_oversized_and_corrupt_404_cannot_authorize_creation(self):
+        for body in [b'x' * (8 * 1024 * 1024 + 1), b'{"message":"Not Found","message":"Not Found"}',
+                     b'{"message":NaN}', b'not json']:
+            with self.subTest(size=len(body)), patch.object(r.http.client, "HTTPSConnection") as connection:
+                response = connection.return_value.getresponse.return_value
+                response.status, response.read.return_value = 404, body
+                response.getheader.return_value = None
+                with self.assertRaises(r.ReleaseError):
+                    r.Registry("test").lookup("0.1.1", True)
+                connection.return_value.close.assert_called_once()
 
     def test_wrong_package_identity(self):
         for field, value in [("id", True), ("id", 0), ("name", "other"), ("package_type", "npm"),
@@ -182,16 +203,16 @@ class RegistryTests(unittest.TestCase):
     def test_find_version_beyond_page_one(self):
         rows = [version(i + 1, "sha256:" + f"{i:064x}") for i in range(100)]
         replies = [(200, package(), None), (200, rows, link()),
-                   (200, [version(101, DIGEST, ["0.1.0"])], link(page=1, relation="prev"))]
+                   (200, [version(101, DIGEST, ["0.1.1"])], link(page=1, relation="prev"))]
         self.assertEqual(self.lookup(replies), (17, DIGEST))
         for fail in [(503, {}, None), (200, {}, None)]:
             with self.subTest(fail=fail), self.assertRaises(r.ReleaseError):
                 self.lookup(replies[:2] + [fail])
 
     def test_malformed_duplicate_or_conflicting_versions(self):
-        for rows in [{}, [dict(id=1)], [version(tags=["0.1.0", "0.1.0"])],
+        for rows in [{}, [dict(id=1)], [version(tags=["0.1.1", "0.1.1"])],
                      [version(), version()], [version(), version(2)],
-                     [version(tags=["0.1.0"]), version(2, OTHER, ["0.1.0"])],
+                     [version(tags=["0.1.1"]), version(2, OTHER, ["0.1.1"])],
                      [version(digest="not-digest")], [version(identifier=True)], [version(tags=[1])]]:
             with self.subTest(rows=rows), self.assertRaises(r.ReleaseError):
                 self.lookup([(200, package(), None), (200, rows, None)])
@@ -266,18 +287,22 @@ class OrchestrationTests(unittest.TestCase):
         self.workflow, self.source = self.base / "workflow", self.base / "source"
         self.workflow.mkdir()
         self.source.mkdir()
-        (self.source / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "tines-mcp"\nversion = "0.1.0"\n')
+        (self.source / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "tines-mcp"\nversion = "0.1.1"\n')
         self.env = environment(GITHUB_OUTPUT=str(self.base / "outputs"), DOCKER_CONFIG=str(self.base / "docker"))
         self.patch_env = patch.dict(os.environ, self.env, clear=True)
         self.patch_env.start()
         self.addCleanup(self.patch_env.stop)
         self.commands, self.fail_command = [], None
-        self.manifest_version = "0.1.0"
+        self.paths = []
+        self.push_output = f"0.1.1: digest: {DIGEST} size: 1234"
+        self.local_image_id = "local-immutable-image-id"
+        self.manifest_version = "0.1.1"
         self.head = SOURCE_SHA
         self.remote = SOURCE_SHA
+        self.remote_tag_name = "v0.1.1"
         self.user = "10001:10001"
         self.label_overrides = {}
-        self.replies = visible() + visible() + visible([version(tags=["0.1.0"])])
+        self.replies = visible() + visible() + visible([version(tags=["0.1.1"])])
         self.signer = WORKFLOW_SHA
         self.patch_run = patch.object(r, "run", side_effect=self.command)
         self.patch_run.start()
@@ -289,6 +314,7 @@ class OrchestrationTests(unittest.TestCase):
         self.release.resolve()
 
     def http(self, path):
+        self.paths.append(path)
         response = self.replies.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -303,11 +329,11 @@ class OrchestrationTests(unittest.TestCase):
         if args[:2] == ("git", "rev-parse"):
             return SOURCE_SHA
         if args[:2] == ("git", "ls-remote"):
-            return f"{self.remote}\trefs/tags/v0.1.0"
+            return f"{self.remote}\trefs/tags/{self.remote_tag_name}"
         if args[:2] == ("cargo", "metadata"):
             return json.dumps(dict(packages=[dict(name="tines-mcp", version=self.manifest_version, source=None)]))
         if args[:3] == ("docker", "image", "inspect"):
-            return json.dumps([dict(Id="local-immutable-image-id", Os="linux", Architecture="amd64",
+            return json.dumps([dict(Id=self.local_image_id, Os="linux", Architecture="amd64",
                                    Config=dict(User=self.user, Labels=dict(r.labels(self.release.state), **self.label_overrides)))])
         if args[:2] == ("docker", "--config"):
             self.assertEqual(json.loads((Path(args[2]) / "config.json").read_text()),
@@ -317,7 +343,7 @@ class OrchestrationTests(unittest.TestCase):
             record = json.loads(self.release.record.read_text())
             self.assertTrue(record["push_attempted"])
             self.assertEqual(record["stage"], "push_attempted_outcome_uncertain")
-            return f"0.1.0: digest: {DIGEST} size: 1234"
+            return self.push_output
         if args == ("gh", "--version"):
             return "gh version 2.103.3 (test)"
         if args == ("gh", "attestation", "verify", "--help"):
@@ -337,11 +363,11 @@ class OrchestrationTests(unittest.TestCase):
     def pushes(self):
         return [c for c, *_ in self.commands if c[:2] == ("docker", "push")]
 
-    def publish_bootstrap(self):
-        os.environ.update(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA))
+    def first_handoff(self):
+        os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
+                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success")
         self.release.resolve()
-        self.replies = [absent(), absent()] + visible([version(tags=["0.1.0"])])
-        self.release.publish()
+        self.replies = [unavailable(), unavailable()] + visible([version(tags=["0.1.1"])])
 
     def test_publish_once_then_verify_and_anonymous_runtime(self):
         self.release.publish()
@@ -349,7 +375,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.release.state["stage"], "digest_observed")
         self.assertEqual(json.loads((self.release.record.parent / "release-identity.json").read_text()),
                          r.identity(self.release.state, WORKFLOW_SHA))
-        self.replies += visible([version(tags=["0.1.0"])])
+        self.replies += visible([version(tags=["0.1.1"])])
         self.release.accept()
         self.assertEqual(self.release.state["validation"], "passed")
         calls = [args for args, *_ in self.commands]
@@ -361,57 +387,72 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_automatic_normal_publication_then_manual_recovery(self):
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="success")
+                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success")
         self.release.resolve()
         self.release.publish()
-        self.replies += visible([version(tags=["0.1.0"])])
+        self.replies += visible([version(tags=["0.1.1"])])
         self.release.accept()
         self.assertEqual(self.release.state["validation"], "passed")
         os.environ.update(GITHUB_EVENT_NAME="workflow_dispatch", RELEASE_CREATED="",
                           RELEASE_VERSION="", RELEASE_PLEASE_RESULT="skipped")
         self.fresh_record()
-        self.replies = visible([version(tags=["0.1.0"])]) * 2
+        self.replies = visible([version(tags=["0.1.1"])]) * 2
         self.release.publish()
         self.release.accept()
         self.assertTrue(self.release.state["reused"])
         self.assertEqual(len(self.pushes()), 1)
         self.assertFalse((self.release.record.parent / "release-identity.json").exists())
 
-    def test_automatic_inaccessible_package_never_bootstraps(self):
+    def test_automatic_rerun_unavailable_package_cannot_create(self):
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="success")
+                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="success", GITHUB_RUN_ATTEMPT="2")
         self.release.resolve()
-        self.replies = [absent()]
+        self.replies = [unavailable()]
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
         self.assertEqual(self.pushes(), [])
-        self.assertEqual(self.release.state["mode"], "normal")
+        self.assertFalse(self.release.state["creation_eligible"])
 
     def test_automatic_invalid_handoff_zero_registry_or_engine_commands(self):
         self.commands.clear()
         os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
-                          RELEASE_VERSION="0.1.0", RELEASE_PLEASE_RESULT="failure")
+                          RELEASE_VERSION="0.1.1", RELEASE_PLEASE_RESULT="failure")
         before = copy.deepcopy(self.replies)
         with self.assertRaises(r.ReleaseError):
             self.release.resolve()
         self.assertEqual(self.commands, [])
         self.assertEqual(self.replies, before)
 
-    def test_bootstrap_then_positive_access_and_normal_recovery(self):
-        self.publish_bootstrap()
+    def test_first_publication_acceptance_then_positive_access_recovery(self):
+        self.first_handoff()
+        self.release.publish()
+        self.replies += visible([version(tags=["0.1.1"])])
+        self.release.accept()
+        self.assertEqual(self.release.state["validation"], "passed")
+        self.assertTrue(self.release.state["creation_eligible"])
+        self.assertEqual(self.release.state["package_observation"], "unavailable")
+        self.assertEqual(self.release.state["prepush_package_observation"], "unavailable")
+        self.assertEqual(self.paths, [r.PACKAGE, r.PACKAGE, r.PACKAGE,
+                                     r.VERSIONS + "?state=active&per_page=100", r.PACKAGE,
+                                     r.VERSIONS + "?state=active&per_page=100"])
+        self.assertIn("new_image=true", (self.base / "outputs").read_text())
+        self.assertEqual(sum(c[:2] == ("docker", "build") for c, *_ in self.commands), 1)
         self.assertEqual(self.release.state["package_id"], 17)
         self.assertEqual(len(self.pushes()), 1)
-        # A fresh normal dispatch reuses the digest, without building or writing it.
-        os.environ.update(RELEASE_MODE="normal", BOOTSTRAP_CONFIRMATION="")
+        # A fresh manual dispatch reuses the digest, without building or writing it.
+        self.commands.clear()
+        os.environ.update(GITHUB_EVENT_NAME="workflow_dispatch")
         self.release = r.Release(self.workflow, self.source, self.base / "recovery/record.json")
         self.release.resolve()
-        self.replies = visible([version(tags=["0.1.0"])]) * 2
+        self.replies = visible([version(tags=["0.1.1"])]) * 2
         self.release.publish()
         self.signer = OLD_WORKFLOW
         self.release.accept()
         self.assertTrue(self.release.state["reused"])
         self.assertEqual(self.release.state["original_workflow_sha"], OLD_WORKFLOW)
-        self.assertEqual(len(self.pushes()), 1)
+        self.assertEqual(self.pushes(), [])
+        self.assertFalse(any(c[:2] == ("docker", "build") for c, *_ in self.commands))
+        self.assertIn("new_image=false", (self.base / "outputs").read_text())
         self.assertFalse((self.release.record.parent / "release-identity.json").exists())
 
     def test_source_resolution_failures_zero_writes(self):
@@ -444,8 +485,8 @@ class OrchestrationTests(unittest.TestCase):
             self.release.publish()
         self.assertEqual(self.pushes(), [])
 
-    def test_bootstrap_actor_gates_run_before_any_registry_work(self):
-        os.environ.update(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA),
+    def test_obsolete_bootstrap_is_rejected_before_any_registry_work(self):
+        os.environ.update(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION="obsolete confirmation",
                           GITHUB_ACTOR_ID="123")
         with self.assertRaises(r.ReleaseError):
             self.release.resolve()
@@ -476,17 +517,16 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.pushes(), [])
 
     def test_normal_lookup_failures_zero_pushes(self):
-        for replies in [[absent()], [(403, {}, None)], [r.ReleaseError("transport")],
+        for replies in [[unavailable()], [(403, {}, None)], [r.ReleaseError("transport")],
                         [(200, package(), None), (503, {}, None)]]:
             self.replies = replies
             with self.subTest(replies=replies), self.assertRaises(r.ReleaseError):
                 self.release.publish()
             self.assertEqual(self.pushes(), [])
 
-    def test_bootstrap_preflight_errors_zero_pushes(self):
-        os.environ.update(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA))
-        self.release.resolve()
-        for reply in [(200, package(), None), (404, {}, None), (401, {}, None), (403, {}, None),
+    def test_first_publication_preflight_errors_zero_pushes(self):
+        self.first_handoff()
+        for reply in [(404, {}, None), (404, unavailable()[1], link()), (301, {}, None), (401, {}, None), (403, {}, None),
                       (429, {}, None), (503, {}, None), r.ReleaseError("transport")]:
             self.replies = [reply]
             with self.subTest(reply=reply), self.assertRaises(r.ReleaseError):
@@ -494,13 +534,12 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(self.pushes(), [])
 
     def test_package_or_tag_appearing_before_push_zero_writes(self):
-        for second in [visible([version(tags=["0.1.0"])]), visible(identifier=18)]:
+        for second in [visible([version(tags=["0.1.1"])]), visible(identifier=18)]:
             self.replies = visible() + second
             with self.assertRaises(r.ReleaseError):
                 self.release.publish()
-        os.environ.update(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA))
-        self.release.resolve()
-        self.replies = [absent(), (200, package(), None)]
+        self.first_handoff()
+        self.replies = [unavailable()] + visible()
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
         self.assertEqual(self.pushes(), [])
@@ -525,11 +564,11 @@ class OrchestrationTests(unittest.TestCase):
         os.environ["RELEASE_JOB_STATUS"] = "failure"
         with contextlib.redirect_stdout(io.StringIO()):
             self.release.report()
-        self.assertIn("Normal-mode investigation only", self.release.state["next_action"])
+        self.assertIn("Positive-access investigation only", self.release.state["next_action"])
 
     def test_post_push_metadata_error_or_digest_conflict_no_second_push(self):
-        for post in [[(403, {}, None)], visible([version(tags=["0.1.0"], digest=OTHER)]),
-                     visible([version(tags=["0.1.0"])], identifier=18)]:
+        for post in [[(403, {}, None)], visible([version(tags=["0.1.1"], digest=OTHER)]),
+                     visible([version(tags=["0.1.1"])], identifier=18)]:
             self.commands.clear()
             self.fresh_record()
             self.replies = visible() + visible() + post
@@ -548,29 +587,152 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.release.state["stage"], "digest_observed")
         self.assertEqual(self.release.state["digest"], DIGEST)
         self.assertEqual(self.release.state["validation"], "incomplete")
-        self.assertIn("Normal-mode investigation only", self.release.state["next_action"])
+        self.assertIn("Positive-access investigation only", self.release.state["next_action"])
         self.assertEqual(len(self.pushes()), 1)
 
-    def test_post_bootstrap_inaccessible_stops_normal_recovery(self):
-        os.environ.update(RELEASE_MODE="bootstrap", BOOTSTRAP_CONFIRMATION=r.confirmation(SOURCE_SHA))
-        self.release.resolve()
-        self.replies = [absent(), absent(), absent()]
+    def test_post_creation_inaccessible_stops_recovery(self):
+        self.first_handoff()
+        self.replies = [unavailable(), unavailable(), unavailable()]
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
         self.assertEqual(len(self.pushes()), 1)
-        os.environ.update(RELEASE_MODE="normal", BOOTSTRAP_CONFIRMATION="")
+        os.environ.update(GITHUB_EVENT_NAME="workflow_dispatch")
         self.release = r.Release(self.workflow, self.source, self.base / "normal/record.json")
         self.release.resolve()
-        self.replies = [absent()]
+        self.replies = [unavailable()]
         with self.assertRaises(r.ReleaseError):
             self.release.publish()
         self.assertEqual(len(self.pushes()), 1)
+
+    def test_first_creation_push_error_or_missing_digest_never_reopens_on_rerun(self):
+        for failure in [True, False]:
+            with self.subTest(push_error=failure):
+                self.commands.clear()
+                os.environ["GITHUB_RUN_ATTEMPT"] = "1"
+                self.fresh_record()
+                self.first_handoff()
+                self.fail_command = (lambda c: c[:2] == ("docker", "push")) if failure else None
+                self.push_output = "push completed without a digest"
+                with self.assertRaises(r.ReleaseError):
+                    self.release.publish()
+                record = json.loads(self.release.record.read_text())
+                self.assertTrue(record["push_attempted"])
+                self.assertNotIn("digest", record)
+                self.assertEqual(record["stage"], "push_attempted_outcome_uncertain")
+                self.assertEqual(len(self.pushes()), 1)
+                self.fail_command = None
+                os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+                self.fresh_record()
+                self.replies = [unavailable()]
+                with self.assertRaises(r.ReleaseError):
+                    self.release.publish()
+                self.assertEqual(len(self.pushes()), 1)
+
+    def test_first_creation_pre_push_failure_has_no_ordinary_retry_allowance(self):
+        self.first_handoff()
+        self.fail_command = lambda c: c[0] == "bash"
+        with self.assertRaises(r.ReleaseError):
+            self.release.publish()
+        self.assertFalse(self.release.state["push_attempted"])
+        os.environ["RELEASE_JOB_STATUS"] = "failure"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.release.report()
+        self.assertIn("narrowly reviewed creation adjustment", self.release.state["next_action"])
+        self.fail_command = None
+        for event, attempt in [("push", "2"), ("workflow_dispatch", "1")]:
+            os.environ.update(GITHUB_EVENT_NAME=event, GITHUB_RUN_ATTEMPT=attempt)
+            self.fresh_record()
+            self.replies = [unavailable()]
+            with self.subTest(event=event), self.assertRaises(r.ReleaseError):
+                self.release.publish()
+        self.assertEqual(self.pushes(), [])
+
+    def test_first_handoff_reuses_visible_digest_without_build_or_new_attestations(self):
+        self.first_handoff()
+        self.replies = visible([version(tags=["0.1.1"])]) * 2
+        self.release.publish()
+        self.signer = OLD_WORKFLOW
+        self.release.accept()
+        self.assertTrue(self.release.state["creation_eligible"])
+        self.assertEqual(self.release.state["package_observation"], "accessible")
+        self.assertEqual(self.release.state["validation"], "passed")
+        self.assertIn("new_image=false", (self.base / "outputs").read_text())
+        self.assertFalse((self.release.record.parent / "release-identity.json").exists())
+        self.assertFalse(any(c[:2] in [("docker", "build"), ("docker", "push")] for c, *_ in self.commands))
+
+    def test_visible_package_cannot_fall_back_to_unavailable_during_first_handoff(self):
+        self.first_handoff()
+        self.replies = visible() + [unavailable()]
+        with self.assertRaises(r.ReleaseError):
+            self.release.publish()
+        self.assertEqual(self.pushes(), [])
+
+    def test_local_image_change_before_first_push_stops_creation(self):
+        self.first_handoff()
+        def change_image(command):
+            if command[0] == "bash":
+                self.local_image_id = "replacement-local-image"
+            return False
+        self.fail_command = change_image
+        with self.assertRaises(r.ReleaseError):
+            self.release.publish()
+        self.assertEqual(self.pushes(), [])
+
+    def test_first_creation_postpush_conflicts_never_emit_attestation_handoff(self):
+        for post in [[unavailable()], [(403, {}, None)], visible(),
+                     visible([version(tags=["0.1.1"], digest=OTHER)]),
+                     [(200, dict(package(), repository={}), None)]]:
+            with self.subTest(post=post):
+                self.commands.clear()
+                self.fresh_record()
+                self.first_handoff()
+                (self.base / "outputs").write_text("")
+                self.replies = [unavailable(), unavailable()] + post
+                with self.assertRaises(r.ReleaseError):
+                    self.release.publish()
+                self.assertEqual(len(self.pushes()), 1)
+                self.assertTrue(self.release.state["push_attempted"])
+                self.assertEqual(self.release.state["digest"], DIGEST)
+                self.assertNotIn("new_image=true", (self.base / "outputs").read_text())
+                self.assertFalse((self.release.record.parent / "release-identity.json").exists())
+
+    def test_first_creation_incomplete_identity_or_private_pull_stays_incomplete(self):
+        for prefix, stage in [(('gh', 'attestation', 'verify'), 'digest_observed'),
+                              (('docker', '--config'), 'identity_verified')]:
+            with self.subTest(prefix=prefix):
+                self.commands.clear()
+                self.fresh_record()
+                self.first_handoff()
+                self.release.publish()
+                self.fail_command = lambda c: c[:len(prefix)] == prefix
+                with self.assertRaises(r.ReleaseError):
+                    self.release.accept()
+                self.assertEqual(self.release.state["stage"], stage)
+                self.assertEqual(self.release.state["validation"], "incomplete")
+                self.assertEqual(len(self.pushes()), 1)
+                self.fail_command = None
+
+    def test_later_version_unavailable_package_stops_before_build(self):
+        os.environ.update(GITHUB_EVENT_NAME="push", RELEASE_CREATED="true",
+                          RELEASE_TAG="v0.1.2", RELEASE_VERSION="0.1.2",
+                          RELEASE_PLEASE_RESULT="success")
+        self.manifest_version = "0.1.2"
+        (self.source / "Cargo.lock").write_text('[[package]]\nname="tines-mcp"\nversion="0.1.2"\n')
+        self.remote_tag_name = "v0.1.2"
+        self.release.resolve()
+        self.replies = [unavailable()]
+        with self.assertRaises(r.ReleaseError):
+            self.release.publish()
+        self.assertFalse(self.release.state["creation_eligible"])
+        self.assertEqual(self.pushes(), [])
+        self.assertFalse(any(c[:2] == ("docker", "build") for c, *_ in self.commands))
+
 
     def select_existing(self):
         self.fresh_record()
-        self.replies = visible([version(tags=["0.1.0"])])
+        self.replies = visible([version(tags=["0.1.1"])])
         self.release.publish()
-        self.replies = visible([version(tags=["0.1.0"])])
+        self.replies = visible([version(tags=["0.1.1"])])
 
     def test_existing_image_bad_attestation_zero_builds_zero_pushes(self):
         self.select_existing()
@@ -606,7 +768,7 @@ class OrchestrationTests(unittest.TestCase):
         with self.assertRaises(r.ReleaseError):
             self.release.accept()
         self.remote = SOURCE_SHA
-        self.replies = visible([version(tags=["0.1.0"], digest=OTHER)])
+        self.replies = visible([version(tags=["0.1.1"], digest=OTHER)])
         with self.assertRaises(r.ReleaseError):
             self.release.accept()
         self.assertEqual(self.pushes(), [])
@@ -625,11 +787,11 @@ class GitSourceTests(unittest.TestCase):
             git("clone", str(remote), str(work), cwd=base)
             git("config", "user.name", "Release test")
             git("config", "user.email", "release@example.invalid")
-            (work / "source").write_text("version 0.1.0\n")
+            (work / "source").write_text("version 0.1.1\n")
             git("add", ".")
             git("commit", "-m", "feat: source")
             sha = git("rev-parse", "HEAD")
-            git("tag", "-a", "v0.1.0", "-m", "source")
+            git("tag", "-a", "v0.1.1", "-m", "source")
             (work / "orchestration").write_text("workflow\n")
             git("add", ".")
             git("commit", "-m", "ci: orchestration")
@@ -647,7 +809,7 @@ class GitSourceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"source_sha={sha}", (base / "output").read_text())
             # Move only the remote tag; local tag remains the old source.
-            git("push", "--force", "origin", "HEAD:refs/tags/v0.1.0")
+            git("push", "--force", "origin", "HEAD:refs/tags/v0.1.1")
             result = subprocess.run(cli, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Remote tag/source mismatch", result.stderr)
@@ -688,8 +850,8 @@ class WorkflowTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, re.M), ["push", "workflow_dispatch"])
-        self.assertIn("options: [normal, bootstrap]", triggers)
-        self.assertIn("default: normal", triggers)
+        self.assertNotIn("bootstrap", triggers)
+        self.assertEqual(re.findall(r"^      ([a-z_]+):", triggers, re.M), ["tag", "source_sha"])
         self.assertIn("group: tines-mcp-release\n  cancel-in-progress: false", workflow)
         permissions = workflow.split("\n  release:\n", 1)[1].split("    permissions:\n", 1)[1].split("    env:\n", 1)[0]
         self.assertEqual(set(permissions.splitlines()),

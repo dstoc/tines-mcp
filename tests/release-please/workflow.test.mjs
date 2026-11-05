@@ -24,11 +24,10 @@ const workflow = YAML.parse(readFileSync(new URL('.github/workflows/release.yml'
 const job = workflow.jobs.release;
 const sha = 'a'.repeat(40);
 const context = (event = 'push', result = 'success', outputs = {}) => ({
-  github: {event_name: event, repository: 'dstoc/tines-mcp', ref: 'refs/heads/main'},
-  needs: {'release-please': {result, outputs: {release_created: 'true', tag_name: 'v0.1.0',
-    version: '0.1.0', sha, ...outputs}}},
-  inputs: event === 'workflow_dispatch' ? {tag: 'v0.1.0', source_sha: sha, mode: 'normal',
-    bootstrap_confirmation: ''} : {},
+  github: {event_name: event, repository: 'dstoc/tines-mcp', ref: 'refs/heads/main', run_attempt: '1'},
+  needs: {'release-please': {result, outputs: {release_created: 'true', tag_name: 'v0.1.1',
+    version: '0.1.1', sha, ...outputs}}},
+  inputs: event === 'workflow_dispatch' ? {tag: 'v0.1.1', source_sha: sha} : {},
 });
 function evaluate(expression, values, cancelled = false) {
   const functions = [{name: 'cancelled', minArgs: 0, maxArgs: 0,
@@ -46,7 +45,7 @@ function helper(values) {
     .map(([key, expression]) => [key, evaluate(expression, values).coerceString()]));
   Object.assign(env, {GITHUB_EVENT_NAME: values.github.event_name,
     GITHUB_REPOSITORY: values.github.repository, GITHUB_REF: values.github.ref,
-    GITHUB_SHA: 'b'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
+    GITHUB_SHA: 'b'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: values.github.run_attempt,
     GITHUB_ACTOR: 'dstoc', GITHUB_ACTOR_ID: '539597', GITHUB_TRIGGERING_ACTOR: 'dstoc'});
   const result = spawnSync('python3', ['-c', `
 import importlib.util, json, sys
@@ -76,7 +75,7 @@ test('real workflow conditions handle skipped, failed and cancelled dependencies
   for (const event of ['pull_request', 'release', 'workflow_run']) {
     assert.equal(admission(context(event)), false);
   }
-  for (const overrides of [{repository: 'fork/tines-mcp'}, {ref: 'refs/tags/v0.1.0'},
+  for (const overrides of [{repository: 'fork/tines-mcp'}, {ref: 'refs/tags/v0.1.1'},
     {ref: 'refs/heads/other'}]) {
     const values = context();
     Object.assign(values.github, overrides);
@@ -86,38 +85,46 @@ test('real workflow conditions handle skipped, failed and cancelled dependencies
   assert.equal(evaluate(workflow.jobs['release-please'].if, context('workflow_dispatch')).coerceString(), 'false');
 });
 
-test('actual environment selection reaches the shared helper with exact source and normal mode', () => {
-  for (const values of [context(), context('workflow_dispatch', 'skipped')]) {
-    const {result, state} = helper(values);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(state.source_sha, sha);
-    assert.equal(state.version, '0.1.0');
-    assert.equal(state.mode, 'normal');
-    assert.equal(state.bootstrap_confirmation, null);
+test('actual environment and helper derive creation only for first 0.1.1 handoff', () => {
+  for (const attempt of ['1', '2', '', '01']) {
+    for (const event of ['push', 'workflow_dispatch']) {
+      for (const version of ['0.1.0', '0.1.1', '0.1.2']) {
+        const values = context(event, event === 'push' ? 'success' : 'skipped',
+          {tag_name: `v${version}`, version});
+        Object.assign(values.github, {run_attempt: attempt});
+        if (event === 'workflow_dispatch') values.inputs.tag = `v${version}`;
+        const {result, state} = helper(values);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(state.source_sha, sha);
+        assert.equal(state.version, version);
+        assert.equal(state.creation_eligible, event === 'push' && version === '0.1.1' && attempt === '1');
+      }
+    }
   }
-  // Push cannot select manual bootstrap inputs, even if they are supplied synthetically.
-  const push = context();
-  push.inputs.mode = 'bootstrap';
-  assert.equal(helper(push).state.mode, 'normal');
 });
 
 test('missing and malformed output reaches no publishing authority', () => {
   for (const outputs of [{sha: ''}, {sha: 'main'}, {sha: 'A'.repeat(40)},
-    {tag_name: ''}, {tag_name: 'v0.1.0-rc.1'}, {tag_name: 'v00.1.0'},
-    {version: ''}, {version: '0.2.0'}, {version: '0.1.0\n'},
+    {tag_name: ''}, {tag_name: 'v0.1.1-rc.1'}, {tag_name: 'v00.1.1'},
+    {version: ''}, {version: '0.2.0'}, {version: '0.1.1\n'},
     {release_created: 'TRUE'}, {tag_name: '$(touch unexpected)'}]) {
     assert.notEqual(helper(context('push', 'success', outputs)).result.status, 0);
   }
   assert.notEqual(helper(context('push', 'failure')).result.status, 0);
 });
 
-test('manual owner bootstrap stays explicit and separate from automation', () => {
-  const values = context('workflow_dispatch', 'skipped');
-  values.inputs.mode = 'bootstrap';
-  values.inputs.bootstrap_confirmation = `CREATE ghcr.io/dstoc/tines-mcp:0.1.0 FROM ${sha}; OWNER CHECKED PACKAGE ABSENT; NO UNRESOLVED PRIOR PUSH`;
-  assert.equal(helper(values).state.mode, 'bootstrap');
-  values.github.event_name = 'push';
-  assert.notEqual(helper(values).result.status, 0);
+test('obsolete inputs cannot select creation in the actual workflow', () => {
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ['source_sha', 'tag']);
+  assert.equal('RELEASE_MODE' in job.env, false);
+  assert.equal('BOOTSTRAP_CONFIRMATION' in job.env, false);
+  const manual = context('workflow_dispatch', 'skipped');
+  Object.assign(manual.inputs, {mode: 'bootstrap', bootstrap_confirmation: 'obsolete confirmation'});
+  assert.equal(helper(manual).state.creation_eligible, false);
+  // Even synthetic removed inputs cannot enable creation on attempt 2.
+  const push = context();
+  Object.assign(push.inputs, manual.inputs);
+  push.github.run_attempt = '2';
+  assert.equal(helper(push).state.creation_eligible, false);
 });
 
 test('PR write capabilities remain isolated from publisher and default permissions', () => {
